@@ -56,6 +56,7 @@ def new_session(topic: str) -> str:
         },
         "image": {"url": None, "status": "pending"},
         "posting_results": {},
+        "cancelled": False,
         "error": None,
         "log": [],
     }
@@ -71,6 +72,17 @@ def push_event(sid: str, event_type: str, data: Any):
 def log(sid: str, msg: str):
     sessions[sid]["log"].append(msg)
     push_event(sid, "log", {"message": msg})
+
+
+def is_cancelled(sid: str) -> bool:
+    """Check if the workflow has been cancelled."""
+    return sessions.get(sid, {}).get("cancelled", False)
+
+
+def check_cancelled(sid: str):
+    """Raise if the workflow was cancelled, so background workers stop."""
+    if is_cancelled(sid):
+        raise asyncio.CancelledError("Workflow stopped by user")
 
 
 # ── Tool wrappers (run blocking I/O in thread pool) ───────────────────────────
@@ -145,6 +157,7 @@ async def run_research_and_generate(sid: str, topic: str):
         log(sid, "Researching current trends...")
 
         trends = await _research(topic)
+        check_cancelled(sid)
         log(sid, "Trend research complete.")
 
         # Step 2 — Generate content
@@ -153,6 +166,7 @@ async def run_research_and_generate(sid: str, topic: str):
         log(sid, "Generating platform-specific posts...")
 
         posts_data = await _generate_content(topic, trends)
+        check_cancelled(sid)
 
         for platform in ["linkedin", "facebook", "instagram"]:
             session["posts"][platform]["content"] = posts_data.get(platform, "")
@@ -166,7 +180,11 @@ async def run_research_and_generate(sid: str, topic: str):
         push_event(sid, "status", {"workflow_status": "reviewing_posts"})
         log(sid, "Posts ready for review.")
 
+    except asyncio.CancelledError:
+        return  # stopped by user, already handled
     except BaseException as e:
+        if is_cancelled(sid):
+            return
         tb = traceback.format_exc()
         error_detail = f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"
         session["workflow_status"] = "error"
@@ -238,10 +256,12 @@ async def run_generate_image(sid: str, style: str = ""):
         }
 
         prompt = await _generate_image_prompt(posts_dict, style)
+        check_cancelled(sid)
         log(sid, "Generating image with Flux AI (this may take ~15s)...")
 
         # Generate image
         image_data = await _generate_image(prompt)
+        check_cancelled(sid)
 
         # Save image to .tmp
         image_path = Path(".tmp") / f"{sid}_post_image.png"
@@ -250,6 +270,7 @@ async def run_generate_image(sid: str, style: str = ""):
 
         log(sid, "Uploading image to Cloudflare R2...")
         image_url = await _upload_image(str(image_path), session["topic"])
+        check_cancelled(sid)
 
         # Cache-bust so the browser always fetches the updated image
         image_url_display = f"{image_url}?t={int(datetime.now().timestamp())}"
@@ -261,7 +282,11 @@ async def run_generate_image(sid: str, style: str = ""):
         push_event(sid, "status", {"workflow_status": "reviewing_image"})
         log(sid, "Image ready for review.")
 
+    except asyncio.CancelledError:
+        return
     except BaseException as e:
+        if is_cancelled(sid):
+            return
         tb = traceback.format_exc()
         error_detail = f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"
         session["image"]["status"] = "pending"
@@ -285,6 +310,7 @@ async def run_post_to_platforms(sid: str):
 
         results = {}
         for platform in ["linkedin", "facebook", "instagram"]:
+            check_cancelled(sid)
             post_text = session["posts"][platform]["content"]
             if not post_text:
                 continue
@@ -313,7 +339,11 @@ async def run_post_to_platforms(sid: str):
         successful = sum(1 for r in results.values() if r.get("success"))
         log(sid, f"Publishing complete: {successful}/{len(results)} platforms succeeded.")
 
+    except asyncio.CancelledError:
+        return
     except BaseException as e:
+        if is_cancelled(sid):
+            return
         tb = traceback.format_exc()
         error_detail = f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"
         session["workflow_status"] = "error"
@@ -391,6 +421,19 @@ async def event_stream(sid: str, request: Request):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/stop/{sid}")
+async def stop_workflow(sid: str):
+    if sid not in sessions:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    session = sessions[sid]
+    session["cancelled"] = True
+    session["workflow_status"] = "stopped"
+    push_event(sid, "status", {"workflow_status": "stopped"})
+    push_event(sid, "stopped", {})
+    log(sid, "Workflow stopped by user.")
+    return {"ok": True}
 
 
 @app.post("/api/posts/{sid}/approve/{platform}")

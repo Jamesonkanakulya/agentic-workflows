@@ -61,6 +61,7 @@ function subscribeToEvents(sid) {
       case 'log':             handleLog(msg.data);            break;
       case 'error':           showError(msg.data.message);    break;
       case 'complete':        handleComplete();               break;
+      case 'stopped':         handleStopped();                break;
     }
   };
 
@@ -80,6 +81,7 @@ function handleStatus({ workflow_status }) {
     reviewing_image:  'Image ready — please review.',
     posting:          'Publishing posts to platforms...',
     complete:         'Workflow complete!',
+    stopped:          'Workflow stopped.',
     error:            'An error occurred.',
   };
   // Show the posting section when posting starts
@@ -87,7 +89,12 @@ function handleStatus({ workflow_status }) {
     document.getElementById('posting-section').classList.remove('hidden');
     document.getElementById('posting-section').scrollIntoView({ behavior: 'smooth' });
   }
-  setStatus(labels[workflow_status] || workflow_status, workflow_status === 'complete');
+  // Hide stop button when workflow ends
+  if (['complete', 'stopped', 'error'].includes(workflow_status)) {
+    document.getElementById('stop-btn').classList.add('hidden');
+  }
+  const isDone = workflow_status === 'complete' || workflow_status === 'stopped';
+  setStatus(labels[workflow_status] || workflow_status, isDone);
 }
 
 function handlePostsReady({ posts }) {
@@ -272,6 +279,30 @@ async function revisePost(platform) {
   });
 }
 
+/* ── Stop workflow ────────────────────────────────────────────────────────── */
+async function stopWorkflow() {
+  if (!sessionId) return;
+  document.getElementById('stop-btn').disabled = true;
+  document.getElementById('stop-btn').textContent = 'Stopping...';
+  await fetch(`/api/stop/${sessionId}`, { method: 'POST' });
+}
+
+function handleStopped() {
+  document.getElementById('stop-btn').classList.add('hidden');
+  if (eventSource) eventSource.close();
+
+  // Show stopped banner
+  const section = document.getElementById('complete-section');
+  section.classList.remove('hidden');
+  section.scrollIntoView({ behavior: 'smooth' });
+  const icon = section.querySelector('.complete-icon');
+  if (icon) icon.innerHTML = '<svg width="40" height="40" viewBox="0 0 20 20" fill="var(--red, #ef4444)"><rect x="4" y="4" width="12" height="12" rx="2"/></svg>';
+  section.querySelector('h2').textContent = 'Workflow Stopped';
+  section.querySelector('p').textContent = 'The workflow was stopped. You can start a new one.';
+  const summary = document.getElementById('complete-summary');
+  if (summary) summary.innerHTML = '';
+}
+
 /* ── Image actions ────────────────────────────────────────────────────────── */
 async function approveImage() {
   await fetch(`/api/image/${sessionId}/approve`, { method: 'POST' });
@@ -356,6 +387,12 @@ function resetWorkflow() {
   ['progress-section','posts-section','image-section','posting-section','complete-section'].forEach(id => {
     document.getElementById(id).classList.add('hidden');
   });
+
+  // Reset stop button
+  const stopBtn = document.getElementById('stop-btn');
+  stopBtn.classList.remove('hidden');
+  stopBtn.disabled = false;
+  stopBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><rect x="4" y="4" width="12" height="12" rx="2"/></svg> Stop';
 
   // Clear post content
   for (const p of ['linkedin','facebook','instagram']) {
