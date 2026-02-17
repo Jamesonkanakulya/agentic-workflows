@@ -441,6 +441,72 @@ function resetSubmitBtn() {
   document.getElementById('submit-spinner').classList.add('hidden');
 }
 
+/* ── Change Password ──────────────────────────────────────────────────────── */
+function showChangePassword() {
+  document.getElementById('pwd-modal-overlay').classList.remove('hidden');
+  document.getElementById('pwd-current').value = '';
+  document.getElementById('pwd-new').value = '';
+  document.getElementById('pwd-confirm').value = '';
+  document.getElementById('pwd-error').style.display = 'none';
+  document.getElementById('pwd-success').style.display = 'none';
+  document.getElementById('pwd-submit').disabled = false;
+  document.getElementById('pwd-submit').textContent = 'Change Password';
+  document.getElementById('pwd-current').focus();
+}
+
+function closeChangePassword() {
+  document.getElementById('pwd-modal-overlay').classList.add('hidden');
+}
+
+async function handleChangePassword(e) {
+  e.preventDefault();
+  const errorEl = document.getElementById('pwd-error');
+  const successEl = document.getElementById('pwd-success');
+  const btn = document.getElementById('pwd-submit');
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  const current = document.getElementById('pwd-current').value;
+  const newPass = document.getElementById('pwd-new').value;
+  const confirm = document.getElementById('pwd-confirm').value;
+
+  if (newPass !== confirm) {
+    errorEl.textContent = 'New passwords do not match.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Changing...';
+
+  try {
+    const res = await authFetch('/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: current, new_password: newPass }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      errorEl.textContent = data.detail || 'Failed to change password.';
+      errorEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Change Password';
+      return;
+    }
+
+    successEl.textContent = 'Password changed successfully!';
+    successEl.style.display = 'block';
+    document.getElementById('pwd-form').style.display = 'none';
+    setTimeout(() => closeChangePassword(), 2000);
+  } catch (err) {
+    errorEl.textContent = 'Connection error. Please try again.';
+    errorEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Change Password';
+  }
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────────── */
 window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('topic-input').focus();

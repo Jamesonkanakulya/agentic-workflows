@@ -15,13 +15,16 @@ Requirements:
 
 import asyncio
 import json
+import logging
 import os
 import secrets
+import smtplib
 import sys
 import time
 import traceback
 import uuid
 from datetime import datetime
+from email.mime.text import MIMEText
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict
@@ -58,8 +61,17 @@ SESSION_COOKIE = "session_token"
 SESSION_MAX_AGE = 86400  # 24 hours
 TOTP_ISSUER = "SocialPostCreator"
 
+# SMTP configuration for password reset emails
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
+SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+
+logger = logging.getLogger("auth")
+
 # Temporary tokens between password step and 2FA step
 pending_2fa: Dict[str, Dict] = {}
+# Password reset tokens: {token: {"created": timestamp}}
+pending_resets: Dict[str, Dict] = {}
 
 
 def create_session_cookie(username: str) -> str:
@@ -93,11 +105,72 @@ def verify_login_token(token: str) -> dict | None:
     return entry
 
 
+def create_reset_token() -> str:
+    token = secrets.token_urlsafe(32)
+    pending_resets[token] = {"created": time.time()}
+    return token
+
+
+def verify_reset_token(token: str) -> bool:
+    entry = pending_resets.get(token)
+    if not entry or time.time() - entry["created"] > 900:  # 15 min expiry
+        pending_resets.pop(token, None)
+        return False
+    return True
+
+
+def consume_reset_token(token: str) -> bool:
+    entry = pending_resets.pop(token, None)
+    if not entry or time.time() - entry["created"] > 900:
+        return False
+    return True
+
+
+def send_email(to: str, subject: str, body: str) -> bool:
+    if not SMTP_EMAIL or not SMTP_APP_PASSWORD:
+        logger.error("SMTP not configured — cannot send email")
+        return False
+    try:
+        msg = MIMEText(body, "html")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_EMAIL
+        msg["To"] = to
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SMTP_EMAIL, SMTP_APP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
+
+
+def update_env_password_hash(new_hash: str):
+    """Update AUTH_PASSWORD_HASH in .env file."""
+    global AUTH_PASSWORD_HASH
+    AUTH_PASSWORD_HASH = new_hash
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    found = False
+    for line in lines:
+        if line.startswith("AUTH_PASSWORD_HASH="):
+            new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Social Post Creator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout"}
+AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout",
+               "/auth/forgot-password", "/reset-password", "/auth/reset-password"}
 
 
 @app.middleware("http")
@@ -527,6 +600,90 @@ async def auth_verify_2fa(req: TotpVerifyRequest, response: Response):
 async def auth_logout(response: Response):
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
+
+
+# ── Password Reset & Change Routes ───────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/auth/forgot-password")
+async def forgot_password(req: ForgotPasswordRequest, request: Request):
+    # Always return success to avoid leaking whether the email is valid
+    if req.email.strip().lower() == ADMIN_EMAIL.strip().lower() and ADMIN_EMAIL:
+        token = create_reset_token()
+        origin = f"{request.url.scheme}://{request.url.netloc}"
+        reset_link = f"{origin}/reset-password?token={token}"
+        body = f"""
+        <h2>Password Reset Request</h2>
+        <p>You requested a password reset for <b>Social Post Creator</b>.</p>
+        <p>Click the link below to set a new password (expires in 15 minutes):</p>
+        <p><a href="{reset_link}" style="display:inline-block;padding:12px 24px;background:#6366f1;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Reset Password</a></p>
+        <p>If you didn't request this, ignore this email.</p>
+        <p style="color:#888;font-size:12px">This link expires in 15 minutes.</p>
+        """
+        logger.info(f"Password reset requested for {req.email}")
+        sent = send_email(ADMIN_EMAIL, "Password Reset - Social Post Creator", body)
+        if not sent:
+            logger.warning("Failed to send reset email — check SMTP config")
+    return {"ok": True, "message": "If that email is registered, a reset link has been sent."}
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+async def reset_password_page(token: str = ""):
+    if not token or not verify_reset_token(token):
+        return HTMLResponse("<html><body><h2>Invalid or expired reset link.</h2><p><a href='/login'>Back to Login</a></p></body></html>")
+    with open("static/reset-password.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.post("/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    if not consume_reset_token(req.token):
+        return JSONResponse({"detail": "Invalid or expired reset token"}, status_code=400)
+
+    if len(req.new_password) < 8:
+        return JSONResponse({"detail": "Password must be at least 8 characters"}, status_code=400)
+
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    update_env_password_hash(new_hash)
+
+    # Notify admin
+    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
+               "<p>Your password for <b>Social Post Creator</b> was reset successfully via the reset link.</p>")
+
+    return {"ok": True, "message": "Password reset successfully. You can now log in."}
+
+
+@app.post("/auth/change-password")
+async def change_password(req: ChangePasswordRequest, request: Request):
+    # This route requires authentication (not in AUTH_EXEMPT)
+    if not AUTH_PASSWORD_HASH:
+        return JSONResponse({"detail": "Password not configured"}, status_code=500)
+
+    if not bcrypt.checkpw(req.current_password.encode(), AUTH_PASSWORD_HASH.encode()):
+        return JSONResponse({"detail": "Current password is incorrect"}, status_code=401)
+
+    if len(req.new_password) < 8:
+        return JSONResponse({"detail": "New password must be at least 8 characters"}, status_code=400)
+
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    update_env_password_hash(new_hash)
+
+    # Notify admin
+    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
+               "<p>Your password for <b>Social Post Creator</b> was changed successfully.</p>")
+
+    return {"ok": True, "message": "Password changed successfully."}
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────

@@ -76,6 +76,10 @@
     }
     .totp-input:focus { border-color: var(--primary); }
     .hidden { display: none !important; }
+    .forgot-link { text-align: center; margin-top: .75rem; }
+    .forgot-link a { color: var(--primary); text-decoration: none; font-size: .85rem; }
+    .forgot-link a:hover { text-decoration: underline; }
+    .forgot-success { color: var(--green, #22c55e); font-size: .85rem; margin-top: .5rem; text-align: center; }
   </style>
 </head>
 <body>
@@ -103,6 +107,20 @@
         <button type="submit" class="login-btn" id="login-btn">Sign In</button>
       </form>
       <p id="login-error" class="login-error hidden"></p>
+      <div id="forgot-link" class="forgot-link"><a href="#" onclick="showForgotPassword(event)">Forgot Password?</a></div>
+    </div>
+
+    <!-- Screen 3: Forgot Password -->
+    <div id="forgot-screen" class="login-card hidden">
+      <h2>Forgot Password</h2>
+      <p>Enter your email address and we'll send you a reset link.</p>
+      <form id="forgot-form" onsubmit="handleForgot(event)">
+        <input id="forgot-email" class="login-input" type="email" placeholder="Email address" required autocomplete="email" />
+        <button type="submit" class="login-btn" id="forgot-btn">Send Reset Link</button>
+      </form>
+      <p id="forgot-error" class="login-error hidden"></p>
+      <p id="forgot-success" class="forgot-success hidden"></p>
+      <div class="forgot-link"><a href="#" onclick="showLoginScreen(event)">Back to Login</a></div>
     </div>
 
     <!-- Screen 2: 2FA Verification -->
@@ -216,6 +234,46 @@
         showError('totp-error', 'Connection error. Please try again.');
         btn.disabled = false;
         btn.textContent = 'Verify';
+      }
+    }
+
+    function showForgotPassword(e) {
+      e.preventDefault();
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('forgot-screen').classList.remove('hidden');
+      document.getElementById('forgot-email').focus();
+    }
+
+    function showLoginScreen(e) {
+      e.preventDefault();
+      document.getElementById('forgot-screen').classList.add('hidden');
+      document.getElementById('login-screen').classList.remove('hidden');
+      document.getElementById('username').focus();
+    }
+
+    async function handleForgot(e) {
+      e.preventDefault();
+      const btn = document.getElementById('forgot-btn');
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+      hideError('forgot-error');
+      document.getElementById('forgot-success').classList.add('hidden');
+
+      try {
+        const res = await fetch('/auth/forgot-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: document.getElementById('forgot-email').value }),
+        });
+        const data = await res.json();
+        const successEl = document.getElementById('forgot-success');
+        successEl.textContent = data.message || 'If that email is registered, a reset link has been sent.';
+        successEl.classList.remove('hidden');
+        document.getElementById('forgot-form').classList.add('hidden');
+      } catch (err) {
+        showError('forgot-error', 'Connection error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Send Reset Link';
       }
     }
 

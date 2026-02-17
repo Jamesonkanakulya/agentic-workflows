@@ -21,6 +21,7 @@
         <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
           + New Workflow
         </button>
+        <button class="btn-ghost" onclick="showChangePassword()" title="Change password">Change Password</button>
         <button class="btn-ghost" onclick="logout()" title="Sign out">Logout</button>
       </div>
     </div>
@@ -238,6 +239,40 @@
     </section>
 
   </main>
+
+  <!-- Change Password Modal -->
+  <div id="pwd-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeChangePassword()">
+    <div class="modal-card">
+      <h2 style="color:var(--text);margin-bottom:.5rem;font-size:1.25rem">Change Password</h2>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:1rem">Enter your current password and a new password.</p>
+      <form id="pwd-form" onsubmit="handleChangePassword(event)" style="display:flex;flex-direction:column;gap:.75rem">
+        <input id="pwd-current" type="password" placeholder="Current password" required autocomplete="current-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <input id="pwd-new" type="password" placeholder="New password (min 8 characters)" required minlength="8" autocomplete="new-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <input id="pwd-confirm" type="password" placeholder="Confirm new password" required minlength="8" autocomplete="new-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <div style="display:flex;gap:.5rem;margin-top:.25rem">
+          <button type="submit" id="pwd-submit" style="flex:1;padding:.65rem;background:var(--primary);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Change Password</button>
+          <button type="button" onclick="closeChangePassword()" style="padding:.65rem 1rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancel</button>
+        </div>
+      </form>
+      <p id="pwd-error" style="color:var(--red);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
+      <p id="pwd-success" style="color:var(--green,#22c55e);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
+    </div>
+  </div>
+
+  <style>
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+      align-items: center; justify-content: center; z-index: 1000;
+    }
+    .modal-overlay.hidden { display: none !important; }
+    .modal-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 2rem; width: 100%; max-width: 400px; box-shadow: var(--shadow);
+    }
+  </style>
 
   <script src="/static/app.js"></script>
 </body>
