@@ -39,8 +39,7 @@ def load_environment():
     model = os.getenv('GITHUB_MODEL', 'openai/gpt-5')
 
     if not token:
-        logger.error("GITHUB_TOKEN not found in environment variables")
-        sys.exit(1)
+        raise ValueError("GITHUB_TOKEN not found in environment variables")
 
     return token, endpoint, model
 
@@ -51,8 +50,7 @@ def load_posts(posts_file: str) -> Dict[str, Any]:
         with open(posts_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Could not load posts file: {e}")
-        sys.exit(1)
+        raise ValueError(f"Could not load posts file: {e}")
 
 
 def generate_image_prompt(posts: Dict[str, Any], style: str = "modern professional") -> str:
@@ -75,8 +73,7 @@ def generate_image_prompt(posts: Dict[str, Any], style: str = "modern profession
         from azure.ai.inference.models import SystemMessage, UserMessage
         from azure.core.credentials import AzureKeyCredential
     except ImportError:
-        logger.error("azure-ai-inference not installed. Run: pip install azure-ai-inference")
-        sys.exit(1)
+        raise ImportError("azure-ai-inference not installed. Run: pip install azure-ai-inference")
 
     token, endpoint, model = load_environment()
 

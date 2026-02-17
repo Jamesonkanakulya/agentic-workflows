@@ -41,8 +41,7 @@ def load_environment():
     load_dotenv()
     api_token = os.getenv('HUGGINGFACE_API_TOKEN')
     if not api_token:
-        logger.error("HUGGINGFACE_API_TOKEN not found in environment variables")
-        sys.exit(1)
+        raise ValueError("HUGGINGFACE_API_TOKEN not found in environment variables")
     return api_token
 
 
@@ -56,11 +55,9 @@ def load_prompt(prompt_file: Optional[str], prompt_text: Optional[str]) -> str:
             with open(prompt_file, 'r', encoding='utf-8') as f:
                 return f.read().strip()
         except Exception as e:
-            logger.error(f"Could not load prompt file: {e}")
-            sys.exit(1)
+            raise ValueError(f"Could not load prompt file: {e}")
 
-    logger.error("Either --prompt or --prompt-file must be provided")
-    sys.exit(1)
+    raise ValueError("Either --prompt or --prompt-file must be provided")
 
 
 def generate_image(

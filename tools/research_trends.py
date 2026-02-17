@@ -36,8 +36,7 @@ def load_environment():
     load_dotenv()
     api_key = os.getenv('TAVILY_API_KEY')
     if not api_key:
-        logger.error("TAVILY_API_KEY not found in environment variables")
-        sys.exit(1)
+        raise ValueError("TAVILY_API_KEY not found in environment variables")
     return api_key
 
 
@@ -59,8 +58,7 @@ def research_trends(topic: str, max_results: int = 5) -> Dict[str, Any]:
     try:
         from tavily import TavilyClient
     except ImportError:
-        logger.error("tavily-python not installed. Run: pip install tavily-python")
-        sys.exit(1)
+        raise ImportError("tavily-python not installed. Run: pip install tavily-python")
 
     api_key = load_environment()
     client = TavilyClient(api_key=api_key)

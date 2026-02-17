@@ -62,8 +62,7 @@ def load_posts(posts_file: str) -> Dict[str, Any]:
         with open(posts_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Could not load posts file: {e}")
-        sys.exit(1)
+        raise ValueError(f"Could not load posts file: {e}")
 
 
 def load_image_url(image_url_file: Optional[str], image_url: Optional[str]) -> Optional[str]:

@@ -46,8 +46,7 @@ def load_environment():
     model = os.getenv('GITHUB_MODEL', 'openai/gpt-5')
 
     if not token:
-        logger.error("GITHUB_TOKEN not found in environment variables")
-        sys.exit(1)
+        raise ValueError("GITHUB_TOKEN not found in environment variables")
 
     return token, endpoint, model
 
@@ -87,8 +86,7 @@ def generate_posts(topic: str, trends_context: str, additional_context: str = ""
         from azure.ai.inference.models import SystemMessage, UserMessage
         from azure.core.credentials import AzureKeyCredential
     except ImportError:
-        logger.error("azure-ai-inference not installed. Run: pip install azure-ai-inference")
-        sys.exit(1)
+        raise ImportError("azure-ai-inference not installed. Run: pip install azure-ai-inference")
 
     token, endpoint, model = load_environment()
 

@@ -43,9 +43,7 @@ def load_environment():
     r2_public_url = os.getenv('R2_PUBLIC_URL', 'https://pub-1a28b7f568cf4a78856d9e19b0f64729.r2.dev')
 
     if not r2_access_key or not r2_secret_key or not r2_account_id:
-        logger.error("Cloudflare R2 credentials not found in environment variables")
-        logger.error("Required: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID")
-        sys.exit(1)
+        raise ValueError("Cloudflare R2 credentials not found. Required: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID")
 
     return r2_access_key, r2_secret_key, r2_account_id, r2_bucket, r2_public_url
 
@@ -116,8 +114,7 @@ def upload_to_s3(
         import boto3
         from botocore.exceptions import ClientError, NoCredentialsError
     except ImportError:
-        logger.error("boto3 not installed. Run: pip install boto3")
-        sys.exit(1)
+        raise ImportError("boto3 not installed. Run: pip install boto3")
 
     # Verify file exists
     if not os.path.exists(file_path):
