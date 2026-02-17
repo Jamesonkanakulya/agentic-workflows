@@ -5,6 +5,21 @@ let eventSource = null;
 const postStates = { linkedin: 'pending', facebook: 'pending', instagram: 'pending' };
 const imageState = { status: 'pending' };
 
+/* ── Auth-aware fetch ────────────────────────────────────────────────────── */
+async function authFetch(url, options = {}) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
+  return res;
+}
+
+async function logout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
+}
+
 /* ── Workflow kickoff ─────────────────────────────────────────────────────── */
 async function startWorkflow() {
   const topic = document.getElementById('topic-input').value.trim();
@@ -20,7 +35,7 @@ async function startWorkflow() {
   hideError();
 
   try {
-    const res = await fetch('/api/start', {
+    const res = await authFetch('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ topic }),
@@ -66,7 +81,10 @@ function subscribeToEvents(sid) {
   };
 
   eventSource.onerror = () => {
-    // SSE drops after server disconnects normally — ignore if workflow done
+    // Check if auth expired
+    fetch(`/api/session/${sid}`).then(res => {
+      if (res.status === 401) window.location.href = '/login';
+    }).catch(() => {});
   };
 }
 
@@ -249,7 +267,7 @@ function updateActions(platform, status) {
 async function approvePost(platform) {
   if (postStates[platform] === 'revising') return;
 
-  await fetch(`/api/posts/${sessionId}/approve/${platform}`, { method: 'POST' });
+  await authFetch(`/api/posts/${sessionId}/approve/${platform}`, { method: 'POST' });
   postStates[platform] = 'approved';
   updateBadge(platform, 'approved');
   updateCardClass(platform, 'approved');
@@ -272,7 +290,7 @@ async function revisePost(platform) {
 
   document.getElementById(`feedback-${platform}`).value = '';
 
-  await fetch(`/api/posts/${sessionId}/revise/${platform}`, {
+  await authFetch(`/api/posts/${sessionId}/revise/${platform}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ feedback }),
@@ -284,7 +302,7 @@ async function stopWorkflow() {
   if (!sessionId) return;
   document.getElementById('stop-btn').disabled = true;
   document.getElementById('stop-btn').textContent = 'Stopping...';
-  await fetch(`/api/stop/${sessionId}`, { method: 'POST' });
+  await authFetch(`/api/stop/${sessionId}`, { method: 'POST' });
 }
 
 function handleStopped() {
@@ -305,7 +323,7 @@ function handleStopped() {
 
 /* ── Image actions ────────────────────────────────────────────────────────── */
 async function approveImage() {
-  await fetch(`/api/image/${sessionId}/approve`, { method: 'POST' });
+  await authFetch(`/api/image/${sessionId}/approve`, { method: 'POST' });
 }
 
 async function reviseImage() {
@@ -319,7 +337,7 @@ async function reviseImage() {
   // Show generating state immediately
   handleImageUpdate({ status: 'generating', url: null });
 
-  await fetch(`/api/image/${sessionId}/revise`, {
+  await authFetch(`/api/image/${sessionId}/revise`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ feedback }),

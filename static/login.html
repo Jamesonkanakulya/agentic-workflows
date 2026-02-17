@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login - Social Post Creator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+    main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 2rem; }
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 420px;
+      box-shadow: var(--shadow);
+    }
+    .login-card h1, .login-card h2 { color: var(--text); margin-bottom: .5rem; font-size: 1.5rem; }
+    .login-card p { color: var(--muted); font-size: .875rem; margin-bottom: 1.25rem; }
+    .login-card form { display: flex; flex-direction: column; gap: .75rem; }
+    .login-input {
+      padding: .75rem 1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: .95rem;
+      outline: none;
+      transition: border-color .15s;
+    }
+    .login-input:focus { border-color: var(--primary); }
+    .login-input::placeholder { color: var(--muted); }
+    .login-btn {
+      padding: .75rem;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+      margin-top: .25rem;
+    }
+    .login-btn:hover { background: var(--primary-h); }
+    .login-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .login-error {
+      color: var(--red);
+      font-size: .85rem;
+      margin-top: .5rem;
+      text-align: center;
+    }
+    .qr-container {
+      text-align: center;
+      margin: 1rem 0;
+      padding: 1rem;
+      background: #fff;
+      border-radius: 8px;
+      display: inline-block;
+    }
+    .qr-container img { width: 200px; height: 200px; }
+    .qr-wrap { text-align: center; }
+    .totp-input {
+      padding: .75rem 1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 1.5rem;
+      text-align: center;
+      letter-spacing: .5rem;
+      outline: none;
+      width: 100%;
+    }
+    .totp-input:focus { border-color: var(--primary); }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="#6366f1"/>
+          <path d="M8 14h12M14 8v12" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <span>Social Post Creator</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Screen 1: Credentials -->
+    <div id="login-screen" class="login-card">
+      <h1>Sign In</h1>
+      <p>Enter your credentials to access the workflow.</p>
+      <form id="login-form" onsubmit="handleLogin(event)">
+        <input id="username" class="login-input" type="text" placeholder="Username" required autocomplete="username" />
+        <input id="password" class="login-input" type="password" placeholder="Password" required autocomplete="current-password" />
+        <button type="submit" class="login-btn" id="login-btn">Sign In</button>
+      </form>
+      <p id="login-error" class="login-error hidden"></p>
+    </div>
+
+    <!-- Screen 2: 2FA Verification -->
+    <div id="totp-screen" class="login-card hidden">
+      <h2>Two-Factor Authentication</h2>
+
+      <div id="qr-setup" class="hidden">
+        <p>Scan this QR code with Google Authenticator:</p>
+        <div class="qr-wrap">
+          <div class="qr-container">
+            <img id="qr-image" alt="2FA QR Code" />
+          </div>
+        </div>
+        <p>Then enter the 6-digit code below to complete setup.</p>
+      </div>
+
+      <div id="qr-existing">
+        <p>Enter the code from your authenticator app:</p>
+      </div>
+
+      <form id="totp-form" onsubmit="handleTotp(event)">
+        <input id="totp-code" class="totp-input" type="text" inputmode="numeric"
+               maxlength="6" pattern="[0-9]{6}" placeholder="000000"
+               required autocomplete="one-time-code" />
+        <button type="submit" class="login-btn" id="totp-btn">Verify</button>
+      </form>
+      <p id="totp-error" class="login-error hidden"></p>
+    </div>
+  </main>
+
+  <script>
+    let loginToken = null;
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const btn = document.getElementById('login-btn');
+      btn.disabled = true;
+      btn.textContent = 'Signing in...';
+      hideError('login-error');
+
+      try {
+        const res = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showError('login-error', data.detail || 'Invalid credentials');
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+          return;
+        }
+
+        if (data.require_2fa) {
+          loginToken = data.login_token;
+          document.getElementById('login-screen').classList.add('hidden');
+          document.getElementById('totp-screen').classList.remove('hidden');
+
+          if (data.setup_required) {
+            document.getElementById('qr-setup').classList.remove('hidden');
+            document.getElementById('qr-existing').classList.add('hidden');
+            document.getElementById('qr-image').src = `/auth/setup-2fa-qr?token=${loginToken}`;
+          }
+          document.getElementById('totp-code').focus();
+        }
+
+        if (data.authenticated) {
+          window.location.href = '/';
+        }
+      } catch (err) {
+        showError('login-error', 'Connection error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      }
+    }
+
+    async function handleTotp(e) {
+      e.preventDefault();
+      const btn = document.getElementById('totp-btn');
+      btn.disabled = true;
+      btn.textContent = 'Verifying...';
+      hideError('totp-error');
+
+      try {
+        const res = await fetch('/auth/verify-2fa', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            login_token: loginToken,
+            totp_code: document.getElementById('totp-code').value,
+          }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showError('totp-error', data.detail || 'Invalid code');
+          document.getElementById('totp-code').value = '';
+          document.getElementById('totp-code').focus();
+          btn.disabled = false;
+          btn.textContent = 'Verify';
+          return;
+        }
+
+        window.location.href = '/';
+      } catch (err) {
+        showError('totp-error', 'Connection error. Please try again.');
+        btn.disabled = false;
+        btn.textContent = 'Verify';
+      }
+    }
+
+    function showError(id, msg) {
+      const el = document.getElementById(id);
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    function hideError(id) {
+      document.getElementById(id).classList.add('hidden');
+    }
+
+    // Focus username on load
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('username').focus();
+    });
+  </script>
+</body>
+</html>

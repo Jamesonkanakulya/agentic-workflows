@@ -17,9 +17,12 @@
         </svg>
         <span>Social Post Creator</span>
       </div>
-      <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
-        + New Workflow
-      </button>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
+          + New Workflow
+        </button>
+        <button class="btn-ghost" onclick="logout()" title="Sign out">Logout</button>
+      </div>
     </div>
   </header>
 

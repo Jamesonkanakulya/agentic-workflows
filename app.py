@@ -16,19 +16,27 @@ Requirements:
 import asyncio
 import json
 import os
+import secrets
 import sys
+import time
 import traceback
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict
 
+import bcrypt
+import pyotp
+import qrcode
+import qrcode.image.pil
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel
 
 # Add tools directory to path so we can import directly
@@ -36,8 +44,74 @@ sys.path.insert(0, str(Path(__file__).parent / "tools"))
 
 load_dotenv()
 
+# ── Auth configuration ──────────────────────────────────────────────────────
+AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
+AUTH_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
+TOTP_SECRET = os.getenv("TOTP_SECRET", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+
+if not SESSION_SECRET:
+    raise RuntimeError("SESSION_SECRET must be set in .env")
+
+serializer = URLSafeTimedSerializer(SESSION_SECRET)
+SESSION_COOKIE = "session_token"
+SESSION_MAX_AGE = 86400  # 24 hours
+TOTP_ISSUER = "SocialPostCreator"
+
+# Temporary tokens between password step and 2FA step
+pending_2fa: Dict[str, Dict] = {}
+
+
+def create_session_cookie(username: str) -> str:
+    return serializer.dumps({"user": username, "nonce": secrets.token_hex(8)})
+
+
+def verify_session_cookie(token: str) -> dict | None:
+    try:
+        return serializer.loads(token, max_age=SESSION_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+def create_login_token(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    pending_2fa[token] = {"username": username, "created": time.time()}
+    return token
+
+
+def consume_login_token(token: str) -> dict | None:
+    entry = pending_2fa.pop(token, None)
+    if not entry or time.time() - entry["created"] > 300:
+        return None
+    return entry
+
+
+def verify_login_token(token: str) -> dict | None:
+    entry = pending_2fa.get(token)
+    if not entry or time.time() - entry["created"] > 300:
+        return None
+    return entry
+
+
+# ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Social Post Creator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path in AUTH_EXEMPT or path.startswith("/static/"):
+        return await call_next(request)
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token or not verify_session_cookie(token):
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+        return RedirectResponse(url="/login", status_code=302)
+    return await call_next(request)
+
 
 # ── In-memory state ──────────────────────────────────────────────────────────
 sessions: Dict[str, Dict] = {}
@@ -349,6 +423,110 @@ async def run_post_to_platforms(sid: str):
         session["workflow_status"] = "error"
         session["error"] = error_detail
         push_event(sid, "error", {"message": error_detail})
+
+
+# ── Auth Routes ───────────────────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TotpVerifyRequest(BaseModel):
+    login_token: str
+    totp_code: str
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    with open("static/login.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.post("/auth/login")
+async def auth_login(req: LoginRequest):
+    if req.username != AUTH_USERNAME:
+        return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
+
+    if not AUTH_PASSWORD_HASH:
+        return JSONResponse({"detail": "Password not configured on server"}, status_code=500)
+
+    if not bcrypt.checkpw(req.password.encode(), AUTH_PASSWORD_HASH.encode()):
+        return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
+
+    login_token = create_login_token(req.username)
+    return {
+        "require_2fa": True,
+        "login_token": login_token,
+        "setup_required": not bool(TOTP_SECRET),
+    }
+
+
+@app.get("/auth/setup-2fa-qr")
+async def setup_2fa_qr(token: str):
+    entry = verify_login_token(token)
+    if not entry:
+        return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
+
+    if TOTP_SECRET:
+        return JSONResponse({"detail": "2FA already configured"}, status_code=400)
+
+    new_secret = pyotp.random_base32()
+    entry["pending_totp_secret"] = new_secret
+
+    totp = pyotp.TOTP(new_secret)
+    uri = totp.provisioning_uri(name=entry["username"], issuer_name=TOTP_ISSUER)
+
+    img = qrcode.make(uri, image_factory=qrcode.image.pil.PilImage)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    return StreamingResponse(buf, media_type="image/png",
+                             headers={"Cache-Control": "no-store"})
+
+
+@app.post("/auth/verify-2fa")
+async def auth_verify_2fa(req: TotpVerifyRequest, response: Response):
+    entry = pending_2fa.get(req.login_token)
+    if not entry or time.time() - entry["created"] > 300:
+        pending_2fa.pop(req.login_token, None)
+        return JSONResponse({"detail": "Invalid or expired login token"}, status_code=401)
+
+    secret = TOTP_SECRET or entry.get("pending_totp_secret")
+    if not secret:
+        return JSONResponse({"detail": "No TOTP secret configured"}, status_code=400)
+
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(req.totp_code, valid_window=1):
+        return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
+
+    # First-time setup: print secret to console
+    if not TOTP_SECRET and entry.get("pending_totp_secret"):
+        print(f"\n{'='*60}")
+        print(f"  2FA SETUP COMPLETE")
+        print(f"  Add this to your .env file:")
+        print(f"  TOTP_SECRET={entry['pending_totp_secret']}")
+        print(f"{'='*60}\n")
+
+    pending_2fa.pop(req.login_token, None)
+
+    session_token = create_session_cookie(entry["username"])
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=session_token,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=SESSION_MAX_AGE,
+        path="/",
+    )
+    return {"authenticated": True}
+
+
+@app.post("/auth/logout")
+async def auth_logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True}
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────

@@ -17,6 +17,12 @@ requests>=2.32.0
 # Image Processing
 pillow>=10.4.0
 
+# Authentication
+pyotp>=2.9.0
+passlib[bcrypt]>=1.7.4
+itsdangerous>=2.1.0
+qrcode[pil]>=7.4
+
 # Utilities
 python-dotenv>=1.0.0
 
