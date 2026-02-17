@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Social Post Creator</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <rect width="28" height="28" rx="8" fill="#6366f1"/>
+          <path d="M8 14h12M14 8v12" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+        <span>Social Post Creator</span>
+      </div>
+      <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
+        + New Workflow
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Topic Input ──────────────────────────────────────────────── -->
+  <main>
+    <section id="topic-section">
+      <div class="hero-card">
+        <h1>Create Social Media Posts</h1>
+        <p class="subtitle">Enter a topic and we'll research trends, generate platform-optimised posts, and create a matching image — with your approval at every step.</p>
+        <div class="input-row">
+          <input id="topic-input" type="text" placeholder="e.g. Building Responsible AI Automation Systems"
+                 onkeydown="if(event.key==='Enter') startWorkflow()" />
+          <button id="submit-btn" class="btn-primary" onclick="startWorkflow()">
+            <span id="submit-label">Generate Posts</span>
+            <span id="submit-spinner" class="spinner hidden"></span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Progress Bar ──────────────────────────────────────────── -->
+    <section id="progress-section" class="hidden">
+      <div class="progress-bar">
+        <div class="step" id="step-research" data-label="Research">
+          <div class="step-dot"></div><span>Research</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" id="step-generate" data-label="Generate">
+          <div class="step-dot"></div><span>Generate</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" id="step-review" data-label="Review Posts">
+          <div class="step-dot"></div><span>Review Posts</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" id="step-image" data-label="Image">
+          <div class="step-dot"></div><span>Image</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" id="step-publish" data-label="Publish">
+          <div class="step-dot"></div><span>Publish</span>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" id="step-complete" data-label="Complete">
+          <div class="step-dot"></div><span>Complete</span>
+        </div>
+      </div>
+
+      <!-- Status / log strip -->
+      <div id="status-strip">
+        <span id="status-icon" class="spinner"></span>
+        <span id="status-text">Starting...</span>
+      </div>
+    </section>
+
+    <!-- ── Error Banner ──────────────────────────────────────────── -->
+    <div id="error-banner" class="hidden">
+      <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.28 7.22a.75.75 0 00-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 101.06 1.06L10 11.06l1.72 1.72a.75.75 0 101.06-1.06L11.06 10l1.72-1.72a.75.75 0 00-1.06-1.06L10 8.94 8.28 7.22z" clip-rule="evenodd"/></svg>
+      <span id="error-text"></span>
+    </div>
+
+    <!-- ── Posts Grid ─────────────────────────────────────────────── -->
+    <section id="posts-section" class="hidden">
+      <h2 class="section-title">Review Posts</h2>
+      <p class="section-sub">Approve each post or request changes. Image generation starts once all three are approved.</p>
+      <div class="posts-grid">
+
+        <!-- LinkedIn -->
+        <div class="platform-card" id="card-linkedin">
+          <div class="card-header">
+            <div class="platform-icon linkedin-icon">in</div>
+            <div class="platform-meta">
+              <span class="platform-name">LinkedIn</span>
+              <span class="char-count" id="chars-linkedin"></span>
+            </div>
+            <span class="badge" id="badge-linkedin">Pending Review</span>
+          </div>
+          <div class="post-content" id="content-linkedin"></div>
+          <div class="hashtags" id="tags-linkedin"></div>
+          <div class="card-actions" id="actions-linkedin">
+            <button class="btn-approve" onclick="approvePost('linkedin')">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve
+            </button>
+            <div class="revise-row">
+              <textarea id="feedback-linkedin" placeholder="Describe changes needed..." rows="2"></textarea>
+              <button class="btn-revise" onclick="revisePost('linkedin')">Request Changes</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Facebook -->
+        <div class="platform-card" id="card-facebook">
+          <div class="card-header">
+            <div class="platform-icon facebook-icon">f</div>
+            <div class="platform-meta">
+              <span class="platform-name">Facebook</span>
+              <span class="char-count" id="chars-facebook"></span>
+            </div>
+            <span class="badge" id="badge-facebook">Pending Review</span>
+          </div>
+          <div class="post-content" id="content-facebook"></div>
+          <div class="hashtags" id="tags-facebook"></div>
+          <div class="card-actions" id="actions-facebook">
+            <button class="btn-approve" onclick="approvePost('facebook')">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve
+            </button>
+            <div class="revise-row">
+              <textarea id="feedback-facebook" placeholder="Describe changes needed..." rows="2"></textarea>
+              <button class="btn-revise" onclick="revisePost('facebook')">Request Changes</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Instagram -->
+        <div class="platform-card" id="card-instagram">
+          <div class="card-header">
+            <div class="platform-icon instagram-icon">&#9679;</div>
+            <div class="platform-meta">
+              <span class="platform-name">Instagram</span>
+              <span class="char-count" id="chars-instagram"></span>
+            </div>
+            <span class="badge" id="badge-instagram">Pending Review</span>
+          </div>
+          <div class="post-content" id="content-instagram"></div>
+          <div class="hashtags" id="tags-instagram"></div>
+          <div class="card-actions" id="actions-instagram">
+            <button class="btn-approve" onclick="approvePost('instagram')">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve
+            </button>
+            <div class="revise-row">
+              <textarea id="feedback-instagram" placeholder="Describe changes needed..." rows="2"></textarea>
+              <button class="btn-revise" onclick="revisePost('instagram')">Request Changes</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /posts-grid -->
+    </section>
+
+    <!-- ── Image Section ──────────────────────────────────────────── -->
+    <section id="image-section" class="hidden">
+      <h2 class="section-title">Review Image</h2>
+      <p class="section-sub">Review the AI-generated image. Approve it or describe changes to regenerate.</p>
+      <div class="image-card">
+        <div id="image-placeholder" class="image-placeholder">
+          <span class="spinner large-spinner"></span>
+          <p>Generating image...</p>
+        </div>
+        <img id="image-preview" class="hidden" alt="Generated post image" />
+        <div id="image-actions" class="image-actions hidden">
+          <span class="badge" id="badge-image">Pending Review</span>
+          <div class="image-buttons">
+            <button class="btn-approve" onclick="approveImage()">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve Image
+            </button>
+            <div class="revise-row">
+              <textarea id="image-feedback" placeholder="e.g. Make it more abstract, use blue tones..." rows="2"></textarea>
+              <button class="btn-revise" onclick="reviseImage()">Regenerate</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Publishing Results ──────────────────────────────────────── -->
+    <section id="posting-section" class="hidden">
+      <h2 class="section-title">Publishing to Platforms</h2>
+      <p class="section-sub">Posting your approved content to social media platforms.</p>
+      <div class="posting-grid">
+        <div class="posting-card" id="posting-linkedin">
+          <div class="platform-icon linkedin-icon">in</div>
+          <span class="platform-name">LinkedIn</span>
+          <span class="posting-status" id="posting-status-linkedin">
+            <span class="spinner small-spinner"></span> Posting...
+          </span>
+        </div>
+        <div class="posting-card" id="posting-facebook">
+          <div class="platform-icon facebook-icon">f</div>
+          <span class="platform-name">Facebook</span>
+          <span class="posting-status" id="posting-status-facebook">
+            <span class="spinner small-spinner"></span> Posting...
+          </span>
+        </div>
+        <div class="posting-card" id="posting-instagram">
+          <div class="platform-icon instagram-icon">&#9679;</div>
+          <span class="platform-name">Instagram</span>
+          <span class="posting-status" id="posting-status-instagram">
+            <span class="spinner small-spinner"></span> Posting...
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Complete Banner ────────────────────────────────────────── -->
+    <section id="complete-section" class="hidden">
+      <div class="complete-card">
+        <div class="complete-icon">
+          <svg width="40" height="40" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clip-rule="evenodd"/></svg>
+        </div>
+        <h2>Workflow Complete!</h2>
+        <p>All posts have been published to your social media platforms.</p>
+        <div id="complete-summary"></div>
+        <button class="btn-primary" onclick="window.open('/', '_blank')">Start New Workflow</button>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
