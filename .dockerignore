@@ -1,0 +1,15 @@
+.env
+.env.local
+.env.template
+.git
+.gitignore
+.claude
+.tmp
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+*.log
+diagnose.py
+tools/tests
