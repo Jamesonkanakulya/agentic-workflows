@@ -144,10 +144,8 @@ def send_email(to: str, subject: str, body: str) -> bool:
         return False
 
 
-def update_env_password_hash(new_hash: str):
-    """Update AUTH_PASSWORD_HASH in .env file."""
-    global AUTH_PASSWORD_HASH
-    AUTH_PASSWORD_HASH = new_hash
+def _update_env_var(key: str, value: str):
+    """Update or add a variable in the .env file."""
     env_path = Path(__file__).parent / ".env"
     if not env_path.exists():
         return
@@ -155,14 +153,31 @@ def update_env_password_hash(new_hash: str):
     new_lines = []
     found = False
     for line in lines:
-        if line.startswith("AUTH_PASSWORD_HASH="):
-            new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+        if line.startswith(f"{key}="):
+            new_lines.append(f"{key}={value}")
             found = True
         else:
             new_lines.append(line)
     if not found:
-        new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+        new_lines.append(f"{key}={value}")
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def update_env_password_hash(new_hash: str):
+    """Update AUTH_PASSWORD_HASH in .env file."""
+    global AUTH_PASSWORD_HASH
+    AUTH_PASSWORD_HASH = new_hash
+    _update_env_var("AUTH_PASSWORD_HASH", new_hash)
+
+
+def _save_totp_secret(secret: str):
+    """Save TOTP_SECRET to .env so the QR setup only happens once."""
+    global TOTP_SECRET
+    TOTP_SECRET = secret
+    _update_env_var("TOTP_SECRET", secret)
+    print(f"\n{'='*60}")
+    print(f"  2FA SETUP COMPLETE — secret saved to .env")
+    print(f"{'='*60}\n")
 
 
 # ── App setup ────────────────────────────────────────────────────────────────
@@ -573,13 +588,9 @@ async def auth_verify_2fa(req: TotpVerifyRequest, response: Response):
     if not totp.verify(req.totp_code, valid_window=1):
         return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
 
-    # First-time setup: print secret to console
+    # First-time setup: save secret to .env so QR doesn't appear again
     if not TOTP_SECRET and entry.get("pending_totp_secret"):
-        print(f"\n{'='*60}")
-        print(f"  2FA SETUP COMPLETE")
-        print(f"  Add this to your .env file:")
-        print(f"  TOTP_SECRET={entry['pending_totp_secret']}")
-        print(f"{'='*60}\n")
+        _save_totp_secret(entry["pending_totp_secret"])
 
     pending_2fa.pop(req.login_token, None)
 
