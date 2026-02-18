@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Character limits for each platform
 CHAR_LIMITS = {
     'linkedin': 1900,
+    'linkedin_company': 1900,
     'facebook': 1900,
     'instagram': 1900
 }
@@ -98,10 +99,11 @@ def generate_posts(topic: str, trends_context: str, additional_context: str = ""
     logger.info(f"Generating content for topic: {topic}")
 
     system_prompt = """You are an expert social media content creator. Your task is to create engaging,
-platform-optimized posts for LinkedIn, Facebook, and Instagram.
+platform-optimized posts for LinkedIn (personal), LinkedIn Company Page, Facebook, and Instagram.
 
 Guidelines:
-- LinkedIn: Professional tone, industry insights, thought leadership
+- LinkedIn (personal): Professional tone, industry insights, thought leadership, first-person perspective
+- LinkedIn Company Page: Authoritative brand voice, company achievements, corporate thought leadership, third-person or "we" perspective
 - Facebook: Conversational and engaging, encourage discussion
 - Instagram: Visual-focused, concise with strong call-to-action
 
@@ -110,15 +112,17 @@ Requirements:
 - Include relevant hashtags (3-5 per platform)
 - Use platform-appropriate language and style
 - Ensure posts are engaging and on-brand
-- Include call-to-action where appropriate
+- Naturally weave in a call-to-action to visit autoflownode.com in every post — integrate it organically into the post body, not as a standalone line
 
 Output your response as a JSON object with this exact structure:
 {
-  "linkedin": "Your LinkedIn post here...",
+  "linkedin": "Your LinkedIn personal post here...",
+  "linkedin_company": "Your LinkedIn Company Page post here...",
   "facebook": "Your Facebook post here...",
   "instagram": "Your Instagram caption here...",
   "hashtags": {
     "linkedin": ["#hashtag1", "#hashtag2"],
+    "linkedin_company": ["#hashtag1", "#hashtag2"],
     "facebook": ["#hashtag1", "#hashtag2"],
     "instagram": ["#hashtag1", "#hashtag2"]
   }
@@ -129,7 +133,8 @@ Output your response as a JSON object with this exact structure:
 {additional_context}
 {trends_context}
 
-Generate engaging posts for LinkedIn, Facebook, and Instagram following the guidelines."""
+Generate engaging posts for LinkedIn (personal), LinkedIn Company Page, Facebook, and Instagram following the guidelines.
+Naturally include a reference to autoflownode.com in each post as a call-to-action."""
 
     try:
         response = client.complete(

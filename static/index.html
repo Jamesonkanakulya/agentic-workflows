@@ -21,6 +21,7 @@
         <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
           + New Workflow
         </button>
+        <button class="btn-ghost" onclick="showChangePassword()" title="Change password">Change Password</button>
         <button class="btn-ghost" onclick="logout()" title="Sign out">Logout</button>
       </div>
     </div>
@@ -91,7 +92,7 @@
     <!-- ── Posts Grid ─────────────────────────────────────────────── -->
     <section id="posts-section" class="hidden">
       <h2 class="section-title">Review Posts</h2>
-      <p class="section-sub">Approve each post or request changes. Image generation starts once all three are approved.</p>
+      <p class="section-sub">Approve each post or request changes. Image generation starts once all four are approved.</p>
       <div class="posts-grid">
 
         <!-- LinkedIn -->
@@ -114,6 +115,30 @@
             <div class="revise-row">
               <textarea id="feedback-linkedin" placeholder="Describe changes needed..." rows="2"></textarea>
               <button class="btn-revise" onclick="revisePost('linkedin')">Request Changes</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- LinkedIn Business Page -->
+        <div class="platform-card" id="card-linkedin_company">
+          <div class="card-header">
+            <div class="platform-icon linkedin-icon" style="font-size:.65rem;letter-spacing:-.5px">Biz</div>
+            <div class="platform-meta">
+              <span class="platform-name">LinkedIn Business</span>
+              <span class="char-count" id="chars-linkedin_company"></span>
+            </div>
+            <span class="badge" id="badge-linkedin_company">Pending Review</span>
+          </div>
+          <div class="post-content" id="content-linkedin_company"></div>
+          <div class="hashtags" id="tags-linkedin_company"></div>
+          <div class="card-actions" id="actions-linkedin_company">
+            <button class="btn-approve" onclick="approvePost('linkedin_company')">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve
+            </button>
+            <div class="revise-row">
+              <textarea id="feedback-linkedin_company" placeholder="Describe changes needed..." rows="2"></textarea>
+              <button class="btn-revise" onclick="revisePost('linkedin_company')">Request Changes</button>
             </div>
           </div>
         </div>
@@ -195,6 +220,32 @@
       </div>
     </section>
 
+    <!-- ── Business Page Image Section ───────────────────────────────────── -->
+    <section id="image-section-business" class="hidden">
+      <h2 class="section-title">Review Business Page Image</h2>
+      <p class="section-sub">Review the AI-generated image for your LinkedIn Business Page. Approve it or describe changes to regenerate.</p>
+      <div class="image-card">
+        <div id="image-placeholder-business" class="image-placeholder">
+          <span class="spinner large-spinner"></span>
+          <p>Generating business image...</p>
+        </div>
+        <img id="image-preview-business" class="hidden" alt="Generated business page image" />
+        <div id="image-actions-business" class="image-actions hidden">
+          <span class="badge" id="badge-image-business">Pending Review</span>
+          <div class="image-buttons">
+            <button class="btn-approve" onclick="approveBusinessImage()">
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+              Approve Business Image
+            </button>
+            <div class="revise-row">
+              <textarea id="image-feedback-business" placeholder="e.g. More corporate, use brand colours..." rows="2"></textarea>
+              <button class="btn-revise" onclick="reviseBusinessImage()">Regenerate</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ── Publishing Results ──────────────────────────────────────── -->
     <section id="posting-section" class="hidden">
       <h2 class="section-title">Publishing to Platforms</h2>
@@ -204,6 +255,13 @@
           <div class="platform-icon linkedin-icon">in</div>
           <span class="platform-name">LinkedIn</span>
           <span class="posting-status" id="posting-status-linkedin">
+            <span class="spinner small-spinner"></span> Posting...
+          </span>
+        </div>
+        <div class="posting-card" id="posting-linkedin_company">
+          <div class="platform-icon linkedin-icon" style="font-size:.65rem;letter-spacing:-.5px">Biz</div>
+          <span class="platform-name">LinkedIn Business</span>
+          <span class="posting-status" id="posting-status-linkedin_company">
             <span class="spinner small-spinner"></span> Posting...
           </span>
         </div>
@@ -238,6 +296,40 @@
     </section>
 
   </main>
+
+  <!-- Change Password Modal -->
+  <div id="pwd-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeChangePassword()">
+    <div class="modal-card">
+      <h2 style="color:var(--text);margin-bottom:.5rem;font-size:1.25rem">Change Password</h2>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:1rem">Enter your current password and a new password.</p>
+      <form id="pwd-form" onsubmit="handleChangePassword(event)" style="display:flex;flex-direction:column;gap:.75rem">
+        <input id="pwd-current" type="password" placeholder="Current password" required autocomplete="current-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <input id="pwd-new" type="password" placeholder="New password (min 8 characters)" required minlength="8" autocomplete="new-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <input id="pwd-confirm" type="password" placeholder="Confirm new password" required minlength="8" autocomplete="new-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <div style="display:flex;gap:.5rem;margin-top:.25rem">
+          <button type="submit" id="pwd-submit" style="flex:1;padding:.65rem;background:var(--primary);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Change Password</button>
+          <button type="button" onclick="closeChangePassword()" style="padding:.65rem 1rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancel</button>
+        </div>
+      </form>
+      <p id="pwd-error" style="color:var(--red);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
+      <p id="pwd-success" style="color:var(--green,#22c55e);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
+    </div>
+  </div>
+
+  <style>
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+      align-items: center; justify-content: center; z-index: 1000;
+    }
+    .modal-overlay.hidden { display: none !important; }
+    .modal-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 2rem; width: 100%; max-width: 400px; box-shadow: var(--shadow);
+    }
+  </style>
 
   <script src="/static/app.js"></script>
 </body>

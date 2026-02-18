@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Character limits for each platform
 CHAR_LIMITS = {
     'linkedin': 1900,
+    'linkedin_company': 1900,
     'facebook': 1900,
     'instagram': 1900
 }
@@ -96,18 +97,21 @@ existing social media posts based on user feedback while maintaining platform-sp
 
 Guidelines:
 - Carefully consider the user's feedback and apply it to all relevant posts
-- Maintain platform-appropriate tone (LinkedIn: professional, Facebook: conversational, Instagram: visual-focused)
+- Maintain platform-appropriate tone (LinkedIn personal: professional first-person, LinkedIn Company Page: authoritative corporate "we" voice, Facebook: conversational, Instagram: visual-focused)
 - Keep each post ≤1900 characters
 - Preserve the core message while incorporating feedback
 - Ensure revised posts are still engaging and on-brand
+- Always preserve the natural call-to-action reference to autoflownode.com in every post
 
 Output your response as a JSON object with the same structure as the input:
 {
-  "linkedin": "Revised LinkedIn post here...",
+  "linkedin": "Revised LinkedIn personal post here...",
+  "linkedin_company": "Revised LinkedIn Company Page post here...",
   "facebook": "Revised Facebook post here...",
   "instagram": "Revised Instagram caption here...",
   "hashtags": {
     "linkedin": ["#hashtag1", "#hashtag2"],
+    "linkedin_company": ["#hashtag1", "#hashtag2"],
     "facebook": ["#hashtag1", "#hashtag2"],
     "instagram": ["#hashtag1", "#hashtag2"]
   }

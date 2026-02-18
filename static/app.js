@@ -2,8 +2,9 @@
 let sessionId = null;
 let eventSource = null;
 
-const postStates = { linkedin: 'pending', facebook: 'pending', instagram: 'pending' };
+const postStates = { linkedin: 'pending', linkedin_company: 'pending', facebook: 'pending', instagram: 'pending' };
 const imageState = { status: 'pending' };
+const businessImageState = { status: 'pending' };
 
 /* ── Auth-aware fetch ────────────────────────────────────────────────────── */
 async function authFetch(url, options = {}) {
@@ -70,8 +71,9 @@ function subscribeToEvents(sid) {
       case 'status':          handleStatus(msg.data);         break;
       case 'posts_ready':     handlePostsReady(msg.data);     break;
       case 'post_update':     handlePostUpdate(msg.data);     break;
-      case 'image_update':    handleImageUpdate(msg.data);    break;
-      case 'posting_result':  handlePostingResult(msg.data);  break;
+      case 'image_update':          handleImageUpdate(msg.data);         break;
+      case 'business_image_update': handleBusinessImageUpdate(msg.data); break;
+      case 'posting_result':        handlePostingResult(msg.data);       break;
       case 'posting_complete': handlePostingComplete(msg.data); break;
       case 'log':             handleLog(msg.data);            break;
       case 'error':           showError(msg.data.message);    break;
@@ -117,7 +119,7 @@ function handleStatus({ workflow_status }) {
 
 function handlePostsReady({ posts }) {
   document.getElementById('posts-section').classList.remove('hidden');
-  for (const platform of ['linkedin', 'facebook', 'instagram']) {
+  for (const platform of ['linkedin', 'linkedin_company', 'facebook', 'instagram']) {
     renderPost(platform, posts[platform]);
   }
 }
@@ -159,6 +161,38 @@ function handleImageUpdate({ status, url }) {
       setBadge(badge, 'approved', 'Approved');
       document.querySelector('#image-section .btn-approve').disabled = true;
       document.querySelector('#image-section .btn-revise').disabled  = true;
+    } else {
+      setBadge(badge, 'ready', 'Pending Review');
+    }
+  }
+}
+
+function handleBusinessImageUpdate({ status, url }) {
+  businessImageState.status = status;
+  const section = document.getElementById('image-section-business');
+  section.classList.remove('hidden');
+
+  const placeholder = document.getElementById('image-placeholder-business');
+  const preview     = document.getElementById('image-preview-business');
+  const actions     = document.getElementById('image-actions-business');
+  const badge       = document.getElementById('badge-image-business');
+
+  if (status === 'generating') {
+    placeholder.classList.remove('hidden');
+    preview.classList.add('hidden');
+    actions.classList.add('hidden');
+    setBadge(badge, 'generating', 'Generating...');
+
+  } else if (status === 'ready' || status === 'approved') {
+    placeholder.classList.add('hidden');
+    preview.classList.remove('hidden');
+    preview.src = url;
+    actions.classList.remove('hidden');
+
+    if (status === 'approved') {
+      setBadge(badge, 'approved', 'Approved');
+      document.querySelector('#image-section-business .btn-approve').disabled = true;
+      document.querySelector('#image-section-business .btn-revise').disabled  = true;
     } else {
       setBadge(badge, 'ready', 'Pending Review');
     }
@@ -275,8 +309,9 @@ async function approvePost(platform) {
 
   const allApproved = Object.values(postStates).every(s => s === 'approved');
   if (allApproved) {
-    setStatus('All posts approved. Generating image...');
+    setStatus('All posts approved. Generating images...');
     document.getElementById('image-section').classList.remove('hidden');
+    document.getElementById('image-section-business').classList.remove('hidden');
     document.getElementById('image-section').scrollIntoView({ behavior: 'smooth' });
   }
 }
@@ -344,6 +379,28 @@ async function reviseImage() {
   });
 }
 
+/* ── Business image actions ───────────────────────────────────────────────── */
+async function approveBusinessImage() {
+  await authFetch(`/api/image/${sessionId}/approve_business`, { method: 'POST' });
+}
+
+async function reviseBusinessImage() {
+  const feedback = document.getElementById('image-feedback-business').value.trim();
+  if (!feedback) {
+    document.getElementById('image-feedback-business').focus();
+    return;
+  }
+  document.getElementById('image-feedback-business').value = '';
+
+  handleBusinessImageUpdate({ status: 'generating', url: null });
+
+  await authFetch(`/api/image/${sessionId}/revise_business`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feedback }),
+  });
+}
+
 /* ── Progress bar ─────────────────────────────────────────────────────────── */
 function updateProgressBar(workflowStatus) {
   const stepMap = {
@@ -395,6 +452,7 @@ function resetWorkflow() {
   sessionId = null;
   Object.keys(postStates).forEach(p => postStates[p] = 'pending');
   imageState.status = 'pending';
+  businessImageState.status = 'pending';
 
   // Restore topic section
   document.getElementById('topic-section').style.display = '';
@@ -402,7 +460,7 @@ function resetWorkflow() {
   resetSubmitBtn();
 
   // Hide all workflow sections
-  ['progress-section','posts-section','image-section','posting-section','complete-section'].forEach(id => {
+  ['progress-section','posts-section','image-section','image-section-business','posting-section','complete-section'].forEach(id => {
     document.getElementById(id).classList.add('hidden');
   });
 
@@ -413,7 +471,7 @@ function resetWorkflow() {
   stopBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><rect x="4" y="4" width="12" height="12" rx="2"/></svg> Stop';
 
   // Clear post content
-  for (const p of ['linkedin','facebook','instagram']) {
+  for (const p of ['linkedin','linkedin_company','facebook','instagram']) {
     document.getElementById(`content-${p}`).textContent = '';
     document.getElementById(`tags-${p}`).innerHTML = '';
     document.getElementById(`chars-${p}`).textContent = '';
@@ -423,12 +481,19 @@ function resetWorkflow() {
     document.getElementById(`feedback-${p}`).value = '';
   }
 
-  // Clear image
+  // Clear main image
   document.getElementById('image-preview').classList.add('hidden');
   document.getElementById('image-preview').src = '';
   document.getElementById('image-placeholder').classList.remove('hidden');
   document.getElementById('image-actions').classList.add('hidden');
   document.getElementById('image-feedback').value = '';
+
+  // Clear business image
+  document.getElementById('image-preview-business').classList.add('hidden');
+  document.getElementById('image-preview-business').src = '';
+  document.getElementById('image-placeholder-business').classList.remove('hidden');
+  document.getElementById('image-actions-business').classList.add('hidden');
+  document.getElementById('image-feedback-business').value = '';
 
   document.getElementById('new-workflow-btn').classList.add('hidden');
   hideError();
@@ -439,6 +504,72 @@ function resetSubmitBtn() {
   document.getElementById('submit-btn').disabled = false;
   document.getElementById('submit-label').textContent = 'Generate Posts';
   document.getElementById('submit-spinner').classList.add('hidden');
+}
+
+/* ── Change Password ──────────────────────────────────────────────────────── */
+function showChangePassword() {
+  document.getElementById('pwd-modal-overlay').classList.remove('hidden');
+  document.getElementById('pwd-current').value = '';
+  document.getElementById('pwd-new').value = '';
+  document.getElementById('pwd-confirm').value = '';
+  document.getElementById('pwd-error').style.display = 'none';
+  document.getElementById('pwd-success').style.display = 'none';
+  document.getElementById('pwd-submit').disabled = false;
+  document.getElementById('pwd-submit').textContent = 'Change Password';
+  document.getElementById('pwd-current').focus();
+}
+
+function closeChangePassword() {
+  document.getElementById('pwd-modal-overlay').classList.add('hidden');
+}
+
+async function handleChangePassword(e) {
+  e.preventDefault();
+  const errorEl = document.getElementById('pwd-error');
+  const successEl = document.getElementById('pwd-success');
+  const btn = document.getElementById('pwd-submit');
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  const current = document.getElementById('pwd-current').value;
+  const newPass = document.getElementById('pwd-new').value;
+  const confirm = document.getElementById('pwd-confirm').value;
+
+  if (newPass !== confirm) {
+    errorEl.textContent = 'New passwords do not match.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Changing...';
+
+  try {
+    const res = await authFetch('/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: current, new_password: newPass }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      errorEl.textContent = data.detail || 'Failed to change password.';
+      errorEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Change Password';
+      return;
+    }
+
+    successEl.textContent = 'Password changed successfully!';
+    successEl.style.display = 'block';
+    document.getElementById('pwd-form').style.display = 'none';
+    setTimeout(() => closeChangePassword(), 2000);
+  } catch (err) {
+    errorEl.textContent = 'Connection error. Please try again.';
+    errorEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Change Password';
+  }
 }
 
 /* ── Init ─────────────────────────────────────────────────────────────────── */

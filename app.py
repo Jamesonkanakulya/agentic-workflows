@@ -15,13 +15,16 @@ Requirements:
 
 import asyncio
 import json
+import logging
 import os
 import secrets
+import smtplib
 import sys
 import time
 import traceback
 import uuid
 from datetime import datetime
+from email.mime.text import MIMEText
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict
@@ -58,8 +61,17 @@ SESSION_COOKIE = "session_token"
 SESSION_MAX_AGE = 86400  # 24 hours
 TOTP_ISSUER = "SocialPostCreator"
 
+# SMTP configuration for password reset emails
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
+SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+
+logger = logging.getLogger("auth")
+
 # Temporary tokens between password step and 2FA step
 pending_2fa: Dict[str, Dict] = {}
+# Password reset tokens: {token: {"created": timestamp}}
+pending_resets: Dict[str, Dict] = {}
 
 
 def create_session_cookie(username: str) -> str:
@@ -93,11 +105,72 @@ def verify_login_token(token: str) -> dict | None:
     return entry
 
 
+def create_reset_token() -> str:
+    token = secrets.token_urlsafe(32)
+    pending_resets[token] = {"created": time.time()}
+    return token
+
+
+def verify_reset_token(token: str) -> bool:
+    entry = pending_resets.get(token)
+    if not entry or time.time() - entry["created"] > 900:  # 15 min expiry
+        pending_resets.pop(token, None)
+        return False
+    return True
+
+
+def consume_reset_token(token: str) -> bool:
+    entry = pending_resets.pop(token, None)
+    if not entry or time.time() - entry["created"] > 900:
+        return False
+    return True
+
+
+def send_email(to: str, subject: str, body: str) -> bool:
+    if not SMTP_EMAIL or not SMTP_APP_PASSWORD:
+        logger.error("SMTP not configured — cannot send email")
+        return False
+    try:
+        msg = MIMEText(body, "html")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_EMAIL
+        msg["To"] = to
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(SMTP_EMAIL, SMTP_APP_PASSWORD)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
+
+
+def update_env_password_hash(new_hash: str):
+    """Update AUTH_PASSWORD_HASH in .env file."""
+    global AUTH_PASSWORD_HASH
+    AUTH_PASSWORD_HASH = new_hash
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    new_lines = []
+    found = False
+    for line in lines:
+        if line.startswith("AUTH_PASSWORD_HASH="):
+            new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"AUTH_PASSWORD_HASH={new_hash}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Social Post Creator")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout"}
+AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout",
+               "/auth/forgot-password", "/reset-password", "/auth/reset-password"}
 
 
 @app.middleware("http")
@@ -126,9 +199,10 @@ def new_session(topic: str) -> str:
         "workflow_status": "idle",
         "posts": {
             p: {"content": "", "hashtags": [], "status": "pending"}
-            for p in ["linkedin", "facebook", "instagram"]
+            for p in ["linkedin", "linkedin_company", "facebook", "instagram"]
         },
         "image": {"url": None, "status": "pending"},
+        "business_image": {"url": None, "status": "pending"},
         "posting_results": {},
         "cancelled": False,
         "error": None,
@@ -208,9 +282,10 @@ async def _upload_image(image_path: str, topic: str) -> str:
 
 async def _post_to_platform(platform: str, post_text: str, image_url: str, credentials: Dict) -> Dict:
     """Post to a single platform in a thread."""
-    from post_to_platforms import post_to_linkedin, post_to_facebook, post_to_instagram
+    from post_to_platforms import post_to_linkedin, post_to_linkedin_company, post_to_facebook, post_to_instagram
     posters = {
         "linkedin": post_to_linkedin,
+        "linkedin_company": post_to_linkedin_company,
         "facebook": post_to_facebook,
         "instagram": post_to_instagram,
     }
@@ -242,7 +317,7 @@ async def run_research_and_generate(sid: str, topic: str):
         posts_data = await _generate_content(topic, trends)
         check_cancelled(sid)
 
-        for platform in ["linkedin", "facebook", "instagram"]:
+        for platform in ["linkedin", "linkedin_company", "facebook", "instagram"]:
             session["posts"][platform]["content"] = posts_data.get(platform, "")
             session["posts"][platform]["hashtags"] = (
                 posts_data.get("hashtags", {}).get(platform, [])
@@ -279,11 +354,11 @@ async def run_revise_post(sid: str, platform: str, feedback: str):
         # Build the posts dict in the format revise_posts expects
         current_posts = {
             p: session["posts"][p]["content"]
-            for p in ["linkedin", "facebook", "instagram"]
+            for p in ["linkedin", "linkedin_company", "facebook", "instagram"]
         }
         current_posts["hashtags"] = {
             p: session["posts"][p]["hashtags"]
-            for p in ["linkedin", "facebook", "instagram"]
+            for p in ["linkedin", "linkedin_company", "facebook", "instagram"]
         }
 
         revised = await _revise_content(current_posts, f"For {platform} only: {feedback}")
@@ -315,11 +390,13 @@ async def run_generate_image(sid: str, style: str = ""):
     try:
         session["workflow_status"] = "generating_image"
         session["image"]["status"] = "generating"
+        session["business_image"]["status"] = "generating"
         push_event(sid, "status", {"workflow_status": "generating_image"})
         push_event(sid, "image_update", {"status": "generating", "url": None})
-        log(sid, "Generating image prompt...")
+        push_event(sid, "business_image_update", {"status": "generating", "url": None})
+        log(sid, "Generating image prompts...")
 
-        # Build posts dict for prompt generation
+        # Build posts dict for main image (personal LinkedIn + Facebook + Instagram)
         posts_dict = {
             p: session["posts"][p]["content"]
             for p in ["linkedin", "facebook", "instagram"]
@@ -329,32 +406,56 @@ async def run_generate_image(sid: str, style: str = ""):
             for p in ["linkedin", "facebook", "instagram"]
         }
 
-        prompt = await _generate_image_prompt(posts_dict, style)
-        check_cancelled(sid)
-        log(sid, "Generating image with Flux AI (this may take ~15s)...")
+        # Build posts dict for business image (LinkedIn Company Page)
+        business_posts_dict = {
+            "linkedin_company": session["posts"]["linkedin_company"]["content"],
+            "hashtags": {"linkedin_company": session["posts"]["linkedin_company"]["hashtags"]}
+        }
 
-        # Generate image
-        image_data = await _generate_image(prompt)
+        # Generate both prompts in parallel
+        main_prompt, business_prompt = await asyncio.gather(
+            _generate_image_prompt(posts_dict, style or "modern professional"),
+            _generate_image_prompt(business_posts_dict, "corporate professional")
+        )
+        check_cancelled(sid)
+        log(sid, "Generating both images with Flux AI in parallel (this may take ~20s)...")
+
+        # Generate both images in parallel
+        main_image_data, business_image_data = await asyncio.gather(
+            _generate_image(main_prompt),
+            _generate_image(business_prompt)
+        )
         check_cancelled(sid)
 
-        # Save image to .tmp
+        # Save and upload main image
         image_path = Path(".tmp") / f"{sid}_post_image.png"
         image_path.parent.mkdir(exist_ok=True)
-        image_path.write_bytes(image_data)
+        image_path.write_bytes(main_image_data)
 
-        log(sid, "Uploading image to Cloudflare R2...")
-        image_url = await _upload_image(str(image_path), session["topic"])
+        # Save and upload business image
+        business_image_path = Path(".tmp") / f"{sid}_business_image.png"
+        business_image_path.write_bytes(business_image_data)
+
+        log(sid, "Uploading both images to Cloudflare R2...")
+        image_url, business_image_url = await asyncio.gather(
+            _upload_image(str(image_path), session["topic"]),
+            _upload_image(str(business_image_path), session["topic"] + "_business")
+        )
         check_cancelled(sid)
 
-        # Cache-bust so the browser always fetches the updated image
-        image_url_display = f"{image_url}?t={int(datetime.now().timestamp())}"
+        ts = int(datetime.now().timestamp())
+        image_url_display = f"{image_url}?t={ts}"
+        business_image_url_display = f"{business_image_url}?t={ts}"
 
         session["image"]["url"] = image_url_display
         session["image"]["status"] = "ready"
+        session["business_image"]["url"] = business_image_url_display
+        session["business_image"]["status"] = "ready"
         session["workflow_status"] = "reviewing_image"
         push_event(sid, "image_update", {"status": "ready", "url": image_url_display})
+        push_event(sid, "business_image_update", {"status": "ready", "url": business_image_url_display})
         push_event(sid, "status", {"workflow_status": "reviewing_image"})
-        log(sid, "Image ready for review.")
+        log(sid, "Both images ready for review.")
 
     except asyncio.CancelledError:
         return
@@ -364,9 +465,54 @@ async def run_generate_image(sid: str, style: str = ""):
         tb = traceback.format_exc()
         error_detail = f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"
         session["image"]["status"] = "pending"
+        session["business_image"]["status"] = "pending"
         session["workflow_status"] = "reviewing_posts"
         push_event(sid, "error", {"message": error_detail})
         push_event(sid, "status", {"workflow_status": "reviewing_posts"})
+
+
+async def run_regenerate_business_image(sid: str, style: str = ""):
+    """Regenerate only the business page image."""
+    session = sessions[sid]
+    try:
+        session["business_image"]["status"] = "generating"
+        push_event(sid, "business_image_update", {"status": "generating", "url": None})
+        log(sid, "Regenerating business page image...")
+
+        business_posts_dict = {
+            "linkedin_company": session["posts"]["linkedin_company"]["content"],
+            "hashtags": {"linkedin_company": session["posts"]["linkedin_company"]["hashtags"]}
+        }
+
+        prompt = await _generate_image_prompt(business_posts_dict, style or "corporate professional")
+        check_cancelled(sid)
+
+        image_data = await _generate_image(prompt)
+        check_cancelled(sid)
+
+        image_path = Path(".tmp") / f"{sid}_business_image.png"
+        image_path.parent.mkdir(exist_ok=True)
+        image_path.write_bytes(image_data)
+
+        log(sid, "Uploading business image to Cloudflare R2...")
+        image_url = await _upload_image(str(image_path), session["topic"] + "_business")
+        check_cancelled(sid)
+
+        image_url_display = f"{image_url}?t={int(datetime.now().timestamp())}"
+        session["business_image"]["url"] = image_url_display
+        session["business_image"]["status"] = "ready"
+        push_event(sid, "business_image_update", {"status": "ready", "url": image_url_display})
+        log(sid, "Business page image ready for review.")
+
+    except asyncio.CancelledError:
+        return
+    except BaseException as e:
+        if is_cancelled(sid):
+            return
+        tb = traceback.format_exc()
+        error_detail = f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"
+        session["business_image"]["status"] = "pending"
+        push_event(sid, "error", {"message": error_detail})
 
 
 async def run_post_to_platforms(sid: str):
@@ -381,27 +527,31 @@ async def run_post_to_platforms(sid: str):
         credentials = await asyncio.to_thread(load_platform_creds)
 
         image_url = (session["image"].get("url") or "").split("?")[0]  # strip cache-bust
+        business_image_url = (session["business_image"].get("url") or "").split("?")[0]
 
         results = {}
-        for platform in ["linkedin", "facebook", "instagram"]:
+        for platform in ["linkedin", "linkedin_company", "facebook", "instagram"]:
             check_cancelled(sid)
             post_text = session["posts"][platform]["content"]
             if not post_text:
                 continue
 
-            log(sid, f"Posting to {platform.capitalize()}...")
+            # LinkedIn Company Page uses its own separate image
+            post_image_url = business_image_url if platform == "linkedin_company" else image_url
+
+            log(sid, f"Posting to {platform.replace('_', ' ').title()}...")
             try:
-                result = await _post_to_platform(platform, post_text, image_url, credentials)
+                result = await _post_to_platform(platform, post_text, post_image_url, credentials)
                 results[platform] = result
                 push_event(sid, "posting_result", {"platform": platform, "result": result})
                 if result.get("success"):
-                    log(sid, f"{platform.capitalize()} posted successfully!")
+                    log(sid, f"{platform.replace('_', ' ').title()} posted successfully!")
                 else:
-                    log(sid, f"{platform.capitalize()} failed: {result.get('error', 'unknown error')}")
+                    log(sid, f"{platform.replace('_', ' ').title()} failed: {result.get('error', 'unknown error')}")
             except Exception as e:
                 results[platform] = {"success": False, "platform": platform, "error": str(e)}
                 push_event(sid, "posting_result", {"platform": platform, "result": results[platform]})
-                log(sid, f"{platform.capitalize()} failed: {e}")
+                log(sid, f"{platform.replace('_', ' ').title()} failed: {e}")
 
         session["posting_results"] = results
 
@@ -529,6 +679,90 @@ async def auth_logout(response: Response):
     return {"ok": True}
 
 
+# ── Password Reset & Change Routes ───────────────────────────────────────────
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/auth/forgot-password")
+async def forgot_password(req: ForgotPasswordRequest, request: Request):
+    # Always return success to avoid leaking whether the email is valid
+    if req.email.strip().lower() == ADMIN_EMAIL.strip().lower() and ADMIN_EMAIL:
+        token = create_reset_token()
+        origin = f"{request.url.scheme}://{request.url.netloc}"
+        reset_link = f"{origin}/reset-password?token={token}"
+        body = f"""
+        <h2>Password Reset Request</h2>
+        <p>You requested a password reset for <b>Social Post Creator</b>.</p>
+        <p>Click the link below to set a new password (expires in 15 minutes):</p>
+        <p><a href="{reset_link}" style="display:inline-block;padding:12px 24px;background:#6366f1;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Reset Password</a></p>
+        <p>If you didn't request this, ignore this email.</p>
+        <p style="color:#888;font-size:12px">This link expires in 15 minutes.</p>
+        """
+        logger.info(f"Password reset requested for {req.email}")
+        sent = send_email(ADMIN_EMAIL, "Password Reset - Social Post Creator", body)
+        if not sent:
+            logger.warning("Failed to send reset email — check SMTP config")
+    return {"ok": True, "message": "If that email is registered, a reset link has been sent."}
+
+
+@app.get("/reset-password", response_class=HTMLResponse)
+async def reset_password_page(token: str = ""):
+    if not token or not verify_reset_token(token):
+        return HTMLResponse("<html><body><h2>Invalid or expired reset link.</h2><p><a href='/login'>Back to Login</a></p></body></html>")
+    with open("static/reset-password.html", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.post("/auth/reset-password")
+async def reset_password(req: ResetPasswordRequest):
+    if not consume_reset_token(req.token):
+        return JSONResponse({"detail": "Invalid or expired reset token"}, status_code=400)
+
+    if len(req.new_password) < 8:
+        return JSONResponse({"detail": "Password must be at least 8 characters"}, status_code=400)
+
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    update_env_password_hash(new_hash)
+
+    # Notify admin
+    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
+               "<p>Your password for <b>Social Post Creator</b> was reset successfully via the reset link.</p>")
+
+    return {"ok": True, "message": "Password reset successfully. You can now log in."}
+
+
+@app.post("/auth/change-password")
+async def change_password(req: ChangePasswordRequest, request: Request):
+    # This route requires authentication (not in AUTH_EXEMPT)
+    if not AUTH_PASSWORD_HASH:
+        return JSONResponse({"detail": "Password not configured"}, status_code=500)
+
+    if not bcrypt.checkpw(req.current_password.encode(), AUTH_PASSWORD_HASH.encode()):
+        return JSONResponse({"detail": "Current password is incorrect"}, status_code=401)
+
+    if len(req.new_password) < 8:
+        return JSONResponse({"detail": "New password must be at least 8 characters"}, status_code=400)
+
+    new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
+    update_env_password_hash(new_hash)
+
+    # Notify admin
+    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
+               "<p>Your password for <b>Social Post Creator</b> was changed successfully.</p>")
+
+    return {"ok": True, "message": "Password changed successfully."}
+
+
 # ── API Routes ────────────────────────────────────────────────────────────────
 
 class StartRequest(BaseModel):
@@ -563,6 +797,7 @@ async def debug_session(sid: str):
         "log": s["log"],
         "error": s["error"],
         "image_status": s["image"]["status"],
+        "business_image_status": s["business_image"]["status"],
         "posts_status": {p: s["posts"][p]["status"] for p in s["posts"]},
     })
 
@@ -646,8 +881,34 @@ async def approve_image(sid: str, background_tasks: BackgroundTasks):
     session = sessions[sid]
     session["image"]["status"] = "approved"
     push_event(sid, "image_update", {"status": "approved", "url": session["image"]["url"]})
-    log(sid, "Image approved. Starting platform publishing...")
-    background_tasks.add_task(run_post_to_platforms, sid)
+    log(sid, "Main image approved.")
+    # Only start publishing once both images are approved
+    if session["business_image"]["status"] == "approved":
+        log(sid, "Both images approved. Starting platform publishing...")
+        background_tasks.add_task(run_post_to_platforms, sid)
+    return {"ok": True}
+
+
+@app.post("/api/image/{sid}/approve_business")
+async def approve_business_image(sid: str, background_tasks: BackgroundTasks):
+    if sid not in sessions:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    session = sessions[sid]
+    session["business_image"]["status"] = "approved"
+    push_event(sid, "business_image_update", {"status": "approved", "url": session["business_image"]["url"]})
+    log(sid, "Business page image approved.")
+    # Only start publishing once both images are approved
+    if session["image"]["status"] == "approved":
+        log(sid, "Both images approved. Starting platform publishing...")
+        background_tasks.add_task(run_post_to_platforms, sid)
+    return {"ok": True}
+
+
+@app.post("/api/image/{sid}/revise_business")
+async def revise_business_image(sid: str, req: ReviseRequest, background_tasks: BackgroundTasks):
+    if sid not in sessions:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    background_tasks.add_task(run_regenerate_business_image, sid, req.feedback)
     return {"ok": True}
 
 

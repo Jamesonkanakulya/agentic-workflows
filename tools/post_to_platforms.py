@@ -43,6 +43,10 @@ def load_environment():
             'access_token': os.getenv('LINKEDIN_ACCESS_TOKEN'),
             'person_urn': os.getenv('LINKEDIN_PERSON_URN')
         },
+        'linkedin_company': {
+            'access_token': os.getenv('LINKEDIN_ACCESS_TOKEN'),
+            'company_urn': os.getenv('LINKEDIN_COMPANY_URN', 'urn:li:organization:108233310')
+        },
         'facebook': {
             'access_token': os.getenv('FACEBOOK_ACCESS_TOKEN'),
             'page_id': os.getenv('FACEBOOK_PAGE_ID')
@@ -230,6 +234,101 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
         return {
             'success': False,
             'platform': 'linkedin',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+def post_to_linkedin_company(post_text: str, image_url: Optional[str], credentials: Dict) -> Dict[str, Any]:
+    """
+    Post to a LinkedIn Company/Organization Page.
+
+    Args:
+        post_text: Text content for the post
+        image_url: URL of the image to include
+        credentials: LinkedIn API credentials (access_token + company_urn)
+
+    Returns:
+        Dictionary with post URL and ID
+    """
+    access_token = credentials.get('access_token')
+    company_urn = credentials.get('company_urn', 'urn:li:organization:108233310')
+
+    if not access_token or not company_urn:
+        raise ValueError("LinkedIn company credentials not configured")
+
+    logger.info("Posting to LinkedIn Company Page...")
+
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'X-Restli-Protocol-Version': '2.0.0'
+    }
+
+    # Upload image to LinkedIn if provided
+    media_category = 'NONE'
+    media_list = []
+    if image_url:
+        asset_urn = _linkedin_upload_image(access_token, company_urn, image_url)
+        if asset_urn:
+            media_category = 'IMAGE'
+            media_list = [{'status': 'READY', 'media': asset_urn}]
+        else:
+            logger.warning("Image upload failed for company page, posting without image")
+
+    # Build share content with company URN as author
+    share_content = {
+        'author': company_urn,
+        'lifecycleState': 'PUBLISHED',
+        'specificContent': {
+            'com.linkedin.ugc.ShareContent': {
+                'shareCommentary': {
+                    'text': post_text
+                },
+                'shareMediaCategory': media_category
+            }
+        },
+        'visibility': {
+            'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
+        }
+    }
+
+    if media_list:
+        share_content['specificContent']['com.linkedin.ugc.ShareContent']['media'] = media_list
+
+    try:
+        response = requests.post(
+            'https://api.linkedin.com/v2/ugcPosts',
+            headers=headers,
+            json=share_content,
+            timeout=30
+        )
+
+        if response.status_code in [200, 201]:
+            post_id = response.json().get('id', '')
+            logger.info(f"LinkedIn company page post created: {post_id}")
+            return {
+                'success': True,
+                'platform': 'linkedin_company',
+                'post_id': post_id,
+                'url': f'https://www.linkedin.com/feed/update/{post_id}',
+                'timestamp': datetime.now().isoformat()
+            }
+        else:
+            logger.error(f"LinkedIn company API error: {response.status_code}")
+            logger.error(f"Response: {response.text}")
+            return {
+                'success': False,
+                'platform': 'linkedin_company',
+                'error': response.text,
+                'timestamp': datetime.now().isoformat()
+            }
+
+    except Exception as e:
+        logger.error(f"Error posting to LinkedIn company page: {e}")
+        return {
+            'success': False,
+            'platform': 'linkedin_company',
             'error': str(e),
             'timestamp': datetime.now().isoformat()
         }
