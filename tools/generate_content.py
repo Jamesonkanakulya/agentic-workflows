@@ -100,17 +100,24 @@ def generate_posts(topic: str, trends_context: str, additional_context: str = ""
     system_prompt = """You are an expert social media content creator. Your task is to create engaging,
 platform-optimized posts for LinkedIn, Facebook, and Instagram.
 
-Guidelines:
-- LinkedIn: Professional tone, industry insights, thought leadership
-- Facebook: Conversational and engaging, encourage discussion
-- Instagram: Visual-focused, concise with strong call-to-action
+Topic fidelity — this is the most important rule:
+- Write exclusively about the topic given. Do NOT inject AI, automation, or technology themes
+  unless the topic itself is explicitly about those subjects.
+- Understand the domain of the topic (e.g. fitness, food, finance, travel, health, real estate,
+  fashion, sports, etc.) and write content that feels native to that domain.
+- Use the trend research as supporting context and data points — not as a reason to pivot the topic.
+- The post should sound like it was written by a genuine expert in the topic's field.
+
+Platform guidelines:
+- LinkedIn: Professional tone, industry insights, thought leadership relevant to the topic
+- Facebook: Conversational and engaging, encourage discussion around the topic
+- Instagram: Visual-focused, concise caption with strong call-to-action tied to the topic
 
 Requirements:
 - Each post must be ≤1900 characters
-- Include relevant hashtags (3-5 per platform)
+- Include 3-5 relevant hashtags per platform that match the topic's domain
 - Use platform-appropriate language and style
-- Ensure posts are engaging and on-brand
-- Include call-to-action where appropriate
+- Ensure posts are engaging and feel authentic to the topic
 
 Output your response as a JSON object with this exact structure:
 {
@@ -129,7 +136,8 @@ Output your response as a JSON object with this exact structure:
 {additional_context}
 {trends_context}
 
-Generate engaging posts for LinkedIn, Facebook, and Instagram following the guidelines."""
+Write posts that are fully focused on the topic above. Stay in the topic's domain and use the
+trend research as supporting context only. Generate posts for LinkedIn, Facebook, and Instagram."""
 
     try:
         response = client.complete(

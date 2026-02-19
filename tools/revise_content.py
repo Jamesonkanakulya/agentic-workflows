@@ -94,12 +94,18 @@ def revise_posts(current_posts: Dict[str, Any], feedback: str) -> Dict[str, Any]
     system_prompt = """You are an expert social media content editor. Your task is to revise
 existing social media posts based on user feedback while maintaining platform-specific best practices.
 
+Topic fidelity — this is the most important rule:
+- Keep the revised posts fully focused on the original topic. Do NOT introduce AI, automation,
+  or technology themes unless they were already present in the posts you are revising.
+- Stay within the domain of the existing content (e.g. fitness stays fitness, food stays food).
+- Only apply the changes the user explicitly requested — do not reframe or pivot the topic.
+
 Guidelines:
-- Carefully consider the user's feedback and apply it to all relevant posts
+- Apply the user's feedback to the relevant posts
 - Maintain platform-appropriate tone (LinkedIn: professional, Facebook: conversational, Instagram: visual-focused)
 - Keep each post ≤1900 characters
-- Preserve the core message while incorporating feedback
-- Ensure revised posts are still engaging and on-brand
+- Preserve the core message and domain while incorporating the feedback
+- Ensure revised posts remain engaging and authentic to the topic
 
 Output your response as a JSON object with the same structure as the input:
 {
