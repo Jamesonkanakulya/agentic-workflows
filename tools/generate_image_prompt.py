@@ -84,28 +84,35 @@ def generate_image_prompt(posts: Dict[str, Any], style: str = "modern profession
 
     logger.info("Generating image prompt from posts")
 
-    system_prompt = """You are an expert at creating prompts for AI image generation tools like Flux AI.
-Your task is to create a detailed, specific prompt that will generate a high-quality image suitable
-for social media posts.
+    system_prompt = """You are a professional art director and visual storyteller specialising in
+social media imagery. Your task is to write a detailed visual description for a photograph or
+digital artwork that perfectly complements a set of social media posts.
 
-Guidelines for good image prompts:
-- Be specific about composition, lighting, colors, and style
-- Include details about mood and atmosphere
-- Specify image quality (e.g., "high resolution", "professional photography")
-- Avoid text or words in the image (they rarely work well)
-- Make it visually striking and social media-friendly
-- Ensure the image will look good as a square or landscape format
-- Consider the content of the posts when designing the visual
+Guidelines for a strong visual description:
+- Describe the subject, composition, lighting, colours, and mood in concrete terms
+- Specify the photographic or artistic style (e.g., "clean studio lighting", "warm natural light",
+  "bold graphic illustration", "cinematic wide shot")
+- Mention image quality cues such as "sharp focus", "high detail", "professional photography"
+- Do not include text, words, or logos in the scene — purely visual elements
+- Keep it social-media-friendly: striking, clear, and well-framed for square or landscape formats
+- Ground the visual in the topic of the posts — the image should feel like it belongs to that subject
 
-Output only the prompt text itself, no explanations or additional text."""
+Output only the visual description itself, with no preamble or explanation."""
 
-    user_prompt = f"""Based on these social media posts, create an optimized image generation prompt:
+    # Summarise post content without dumping raw JSON, to avoid filter false-positives
+    post_summary = "\n".join(
+        f"- {k}: {str(v)[:300]}"
+        for k, v in posts.items()
+        if k != "hashtags" and isinstance(v, str) and v.strip()
+    )
 
-{json.dumps(posts, indent=2)}
+    user_prompt = f"""Here is a summary of the social media posts to illustrate:
+
+{post_summary}
 
 Desired visual style: {style}
 
-Create a detailed prompt that will generate a compelling image for these posts."""
+Write a detailed visual description for an image that would work beautifully alongside these posts."""
 
     try:
         response = client.complete(
