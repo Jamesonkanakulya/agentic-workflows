@@ -1,5 +1,6 @@
 .env
 .env.local
+data/
 .env.template
 .git
 .gitignore

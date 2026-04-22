@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 def load_environment():
     """Load environment variables from .env file."""
-    load_dotenv()
+    load_dotenv(override=True)
 
     credentials = {
         'linkedin': {
