@@ -120,13 +120,14 @@ function handleStatus({ workflow_status }) {
     reviewing_posts:  'Posts ready — please review each one.',
     generating_image: 'Generating image with Flux AI...',
     reviewing_image:  'Image ready — please review.',
+    ready_to_publish: 'Image approved — select platforms to publish.',
     posting:          'Publishing posts to platforms...',
     complete:         'Workflow complete!',
     stopped:          'Workflow stopped.',
     error:            'An error occurred.',
   };
-  // Show the posting section when posting starts
-  if (workflow_status === 'posting') {
+  // Show the posting section when image is approved or posting is in progress
+  if (workflow_status === 'ready_to_publish' || workflow_status === 'posting') {
     document.getElementById('posting-section').classList.remove('hidden');
     document.getElementById('posting-section').scrollIntoView({ behavior: 'smooth' });
   }
@@ -194,13 +195,24 @@ function handleLog({ message }) {
 
 function handlePostingResult({ platform, result }) {
   const statusEl = document.getElementById(`posting-status-${platform}`);
+  const btn = document.getElementById(`post-btn-${platform}`);
   if (!statusEl) return;
+  if (btn) btn.style.display = 'none';
   if (result.success) {
     renderTextWithIcon(statusEl, '✓', 'var(--green)', 'Published', result.url || '', result.url ? 'View Post' : '');
     document.getElementById(`posting-${platform}`).classList.add('posting-success');
   } else {
     renderTextWithIcon(statusEl, '✗', 'var(--red)', `Failed: ${result.error || 'unknown error'}`);
     document.getElementById(`posting-${platform}`).classList.add('posting-failed');
+  }
+  // Hide "Post to All" once every platform has a result
+  const allDone = ['linkedin', 'facebook', 'instagram'].every(p => {
+    const b = document.getElementById(`post-btn-${p}`);
+    return !b || b.style.display === 'none';
+  });
+  if (allDone) {
+    const allBtn = document.getElementById('post-all-btn');
+    if (allBtn) allBtn.style.display = 'none';
   }
 }
 
@@ -374,6 +386,57 @@ async function reviseImage() {
   });
 }
 
+/* ── Per-platform publish ─────────────────────────────────────────────────── */
+async function postToPlatform(platform) {
+  const btn = document.getElementById(`post-btn-${platform}`);
+  const statusEl = document.getElementById(`posting-status-${platform}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Posting...'; }
+  if (statusEl) {
+    clearChildren(statusEl);
+    const spin = document.createElement('span');
+    spin.className = 'spinner small-spinner';
+    statusEl.appendChild(spin);
+  }
+  try {
+    const res = await authFetch(`/api/platform/${sessionId}/post/${platform}`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Request failed');
+    }
+  } catch (err) {
+    if (statusEl) clearChildren(statusEl);
+    if (btn) { btn.disabled = false; btn.textContent = `Post to ${platform.charAt(0).toUpperCase() + platform.slice(1)}`; }
+    showError(`Failed to post to ${platform}: ${err.message}`);
+  }
+}
+
+async function postToAll() {
+  const allBtn = document.getElementById('post-all-btn');
+  if (allBtn) { allBtn.disabled = true; allBtn.textContent = 'Posting...'; }
+  for (const platform of ['linkedin', 'facebook', 'instagram']) {
+    const btn = document.getElementById(`post-btn-${platform}`);
+    if (!btn || btn.style.display === 'none') continue;
+    const statusEl = document.getElementById(`posting-status-${platform}`);
+    if (btn) { btn.disabled = true; btn.textContent = 'Posting...'; }
+    if (statusEl) {
+      clearChildren(statusEl);
+      const spin = document.createElement('span');
+      spin.className = 'spinner small-spinner';
+      statusEl.appendChild(spin);
+    }
+  }
+  try {
+    const res = await authFetch(`/api/platform/${sessionId}/post/all`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Request failed');
+    }
+  } catch (err) {
+    if (allBtn) { allBtn.disabled = false; allBtn.textContent = 'Post to All Platforms'; }
+    showError(`Failed to post: ${err.message}`);
+  }
+}
+
 /* ── Progress bar ─────────────────────────────────────────────────────────── */
 function updateProgressBar(workflowStatus) {
   const stepMap = {
@@ -382,6 +445,7 @@ function updateProgressBar(workflowStatus) {
     reviewing_posts:  { done: ['step-research','step-generate'], active: 'step-review' },
     generating_image: { done: ['step-research','step-generate','step-review'], active: 'step-image' },
     reviewing_image:  { done: ['step-research','step-generate','step-review'], active: 'step-image' },
+    ready_to_publish: { done: ['step-research','step-generate','step-review','step-image'], active: 'step-publish' },
     posting:          { done: ['step-research','step-generate','step-review','step-image'], active: 'step-publish' },
     complete:         { done: ['step-research','step-generate','step-review','step-image','step-publish'], active: 'step-complete' },
   };
@@ -442,7 +506,7 @@ function resetWorkflow() {
   stopBtn.disabled = false;
   stopBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><rect x="4" y="4" width="12" height="12" rx="2"/></svg> Stop';
 
-  // Clear post content
+  // Clear post content and reset posting buttons
   for (const p of ['linkedin','facebook','instagram']) {
     document.getElementById(`content-${p}`).textContent = '';
     clearChildren(document.getElementById(`tags-${p}`));
@@ -451,7 +515,19 @@ function resetWorkflow() {
     updateCardClass(p, 'pending');
     updateActions(p, 'pending');
     document.getElementById(`feedback-${p}`).value = '';
+    // Reset posting section
+    const postBtn = document.getElementById(`post-btn-${p}`);
+    if (postBtn) {
+      postBtn.style.display = '';
+      postBtn.disabled = false;
+      postBtn.textContent = `Post to ${p.charAt(0).toUpperCase() + p.slice(1)}`;
+    }
+    const statusEl = document.getElementById(`posting-status-${p}`);
+    if (statusEl) clearChildren(statusEl);
+    document.getElementById(`posting-${p}`).classList.remove('posting-success', 'posting-failed');
   }
+  const allBtn = document.getElementById('post-all-btn');
+  if (allBtn) { allBtn.style.display = ''; allBtn.disabled = false; allBtn.textContent = 'Post to All Platforms'; }
 
   // Clear image
   document.getElementById('image-preview').classList.add('hidden');

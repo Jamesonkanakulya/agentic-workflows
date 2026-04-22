@@ -689,6 +689,8 @@ async def run_post_to_platforms(sid: str):
         results = {}
         for platform in ["linkedin", "facebook", "instagram"]:
             check_cancelled(sid)
+            if platform in session.get("posting_results", {}):
+                continue  # already posted individually
             post_text = session["posts"][platform]["content"]
             if not post_text:
                 continue
@@ -727,6 +729,58 @@ async def run_post_to_platforms(sid: str):
         session["workflow_status"] = "error"
         session["error"] = error_detail
         push_event(sid, "error", {"message": error_detail})
+
+
+async def run_post_single_platform(sid: str, platform: str):
+    session = sessions[sid]
+    try:
+        if session["workflow_status"] not in ("ready_to_publish", "posting"):
+            return
+        session["workflow_status"] = "posting"
+        push_event(sid, "status", {"workflow_status": "posting"})
+
+        from post_to_platforms import load_environment as load_platform_creds
+        credentials = await asyncio.to_thread(load_platform_creds)
+        image_url = (session["image"].get("url") or "").split("?")[0]
+        post_text = session["posts"][platform]["content"]
+
+        log(sid, f"Posting to {platform.capitalize()}...")
+        try:
+            result = await _post_to_platform(platform, post_text, image_url, credentials)
+        except Exception as e:
+            result = {"success": False, "platform": platform, "error": str(e)}
+
+        if "posting_results" not in session:
+            session["posting_results"] = {}
+        session["posting_results"][platform] = result
+        push_event(sid, "posting_result", {"platform": platform, "result": result})
+
+        if result.get("success"):
+            log(sid, f"{platform.capitalize()} posted successfully!")
+        else:
+            log(sid, f"{platform.capitalize()} failed: {result.get('error', 'unknown error')}")
+
+        all_posted = all(p in session["posting_results"] for p in ["linkedin", "facebook", "instagram"])
+        if all_posted:
+            session["workflow_status"] = "complete"
+            ok = sum(1 for r in session["posting_results"].values() if r.get("success"))
+            push_event(sid, "posting_complete", {"results": session["posting_results"]})
+            push_event(sid, "status", {"workflow_status": "complete"})
+            push_event(sid, "complete", {})
+            log(sid, f"Publishing complete: {ok}/3 platforms succeeded.")
+        else:
+            session["workflow_status"] = "ready_to_publish"
+            push_event(sid, "status", {"workflow_status": "ready_to_publish"})
+
+    except asyncio.CancelledError:
+        return
+    except BaseException as e:
+        if is_cancelled(sid):
+            return
+        tb = traceback.format_exc()
+        session["workflow_status"] = "ready_to_publish"
+        push_event(sid, "status", {"workflow_status": "ready_to_publish"})
+        push_event(sid, "error", {"message": f"{type(e).__name__}: {str(e) or '(no message)'}\n\n{tb}"})
 
 
 # ── Auth Routes ───────────────────────────────────────────────────────────────
@@ -1105,13 +1159,40 @@ async def revise_post(sid: str, platform: str, req: ReviseRequest, background_ta
 
 
 @app.post("/api/image/{sid}/approve")
-async def approve_image(sid: str, background_tasks: BackgroundTasks):
+async def approve_image(sid: str):
     if sid not in sessions:
         return JSONResponse({"error": "Not found"}, status_code=404)
     session = sessions[sid]
     session["image"]["status"] = "approved"
+    session["workflow_status"] = "ready_to_publish"
     push_event(sid, "image_update", {"status": "approved", "url": session["image"]["url"]})
-    log(sid, "Image approved. Starting platform publishing...")
+    push_event(sid, "status", {"workflow_status": "ready_to_publish"})
+    log(sid, "Image approved. Select platforms to publish to.")
+    return {"ok": True}
+
+
+@app.post("/api/platform/{sid}/post/{platform}")
+async def post_single_platform(sid: str, platform: str, background_tasks: BackgroundTasks):
+    if sid not in sessions:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    if platform not in ("linkedin", "facebook", "instagram"):
+        return JSONResponse({"error": "Invalid platform"}, status_code=400)
+    session = sessions[sid]
+    if session["image"]["status"] != "approved":
+        return JSONResponse({"error": "Image not yet approved"}, status_code=400)
+    if platform in session.get("posting_results", {}):
+        return JSONResponse({"error": "Already posted to this platform"}, status_code=400)
+    background_tasks.add_task(run_post_single_platform, sid, platform)
+    return {"ok": True}
+
+
+@app.post("/api/platform/{sid}/post/all")
+async def post_all_platforms(sid: str, background_tasks: BackgroundTasks):
+    if sid not in sessions:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    session = sessions[sid]
+    if session["image"]["status"] != "approved":
+        return JSONResponse({"error": "Image not yet approved"}, status_code=400)
     background_tasks.add_task(run_post_to_platforms, sid)
     return {"ok": True}
 

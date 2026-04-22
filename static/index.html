@@ -199,30 +199,36 @@
 
     <!-- ── Publishing Results ──────────────────────────────────────── -->
     <section id="posting-section" class="hidden">
-      <h2 class="section-title">Publishing to Platforms</h2>
-      <p class="section-sub">Posting your approved content to social media platforms.</p>
+      <h2 class="section-title">Publish to Platforms</h2>
+      <p class="section-sub">Post to each platform individually, or publish all at once.</p>
       <div class="posting-grid">
         <div class="posting-card" id="posting-linkedin">
-          <div class="platform-icon linkedin-icon">in</div>
-          <span class="platform-name">LinkedIn</span>
-          <span class="posting-status" id="posting-status-linkedin">
-            <span class="spinner small-spinner"></span> Posting...
-          </span>
+          <div class="posting-card-row">
+            <div class="platform-icon linkedin-icon">in</div>
+            <span class="platform-name">LinkedIn</span>
+            <span class="posting-status" id="posting-status-linkedin"></span>
+          </div>
+          <button class="btn-post-platform" id="post-btn-linkedin" onclick="postToPlatform('linkedin')">Post to LinkedIn</button>
         </div>
         <div class="posting-card" id="posting-facebook">
-          <div class="platform-icon facebook-icon">f</div>
-          <span class="platform-name">Facebook</span>
-          <span class="posting-status" id="posting-status-facebook">
-            <span class="spinner small-spinner"></span> Posting...
-          </span>
+          <div class="posting-card-row">
+            <div class="platform-icon facebook-icon">f</div>
+            <span class="platform-name">Facebook</span>
+            <span class="posting-status" id="posting-status-facebook"></span>
+          </div>
+          <button class="btn-post-platform" id="post-btn-facebook" onclick="postToPlatform('facebook')">Post to Facebook</button>
         </div>
         <div class="posting-card" id="posting-instagram">
-          <div class="platform-icon instagram-icon">&#9679;</div>
-          <span class="platform-name">Instagram</span>
-          <span class="posting-status" id="posting-status-instagram">
-            <span class="spinner small-spinner"></span> Posting...
-          </span>
+          <div class="posting-card-row">
+            <div class="platform-icon instagram-icon">&#9679;</div>
+            <span class="platform-name">Instagram</span>
+            <span class="posting-status" id="posting-status-instagram"></span>
+          </div>
+          <button class="btn-post-platform" id="post-btn-instagram" onclick="postToPlatform('instagram')">Post to Instagram</button>
         </div>
+      </div>
+      <div style="text-align:center;margin-top:1.25rem">
+        <button class="btn-primary" id="post-all-btn" onclick="postToAll()">Post to All Platforms</button>
       </div>
     </section>
 
