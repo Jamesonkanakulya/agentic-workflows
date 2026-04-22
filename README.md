@@ -71,6 +71,14 @@ Required API keys:
 pytest tools/tests/ -v
 ```
 
+## Authentication and Deployment
+
+- Runtime auth state is stored in a durable SQLite database at `AUTH_DB_PATH` rather than being rewritten into `.env`.
+- `.env` now bootstraps the initial admin password hash, admin email, and optional initial TOTP secret on first run only.
+- For Docker deployments, mount persistent storage for `/app/data` so password changes, reset tokens, and 2FA enrollment survive container restarts.
+- Set `COOKIE_SECURE=true` behind HTTPS and set `ALLOWED_ORIGIN` if you need cross-origin access from a specific frontend origin.
+- `ENABLE_DEBUG_API` defaults to `false`; leave it disabled in professional/production environments.
+
 ## Usage
 
 ### Quick Start

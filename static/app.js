@@ -1,9 +1,32 @@
 /* ── State ────────────────────────────────────────────────────────────────── */
 let sessionId = null;
 let eventSource = null;
+let reconfigureLoginToken = null;
 
 const postStates = { linkedin: 'pending', facebook: 'pending', instagram: 'pending' };
 const imageState = { status: 'pending' };
+
+function clearChildren(el) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+}
+
+function renderTextWithIcon(el, iconChar, iconColor, text, linkUrl = '', linkText = '') {
+  clearChildren(el);
+  const icon = document.createElement('span');
+  icon.style.color = iconColor;
+  icon.textContent = iconChar;
+  el.appendChild(icon);
+  el.appendChild(document.createTextNode(` ${text}`));
+  if (linkUrl && linkText) {
+    el.appendChild(document.createTextNode(' — '));
+    const link = document.createElement('a');
+    link.href = linkUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = linkText;
+    el.appendChild(link);
+  }
+}
 
 /* ── Auth-aware fetch ────────────────────────────────────────────────────── */
 async function authFetch(url, options = {}) {
@@ -173,14 +196,10 @@ function handlePostingResult({ platform, result }) {
   const statusEl = document.getElementById(`posting-status-${platform}`);
   if (!statusEl) return;
   if (result.success) {
-    const url = result.url || '#';
-    statusEl.innerHTML = `<span style="color:var(--green)">&#10003;</span> Published`;
-    if (result.url) {
-      statusEl.innerHTML += ` — <a href="${url}" target="_blank">View Post</a>`;
-    }
+    renderTextWithIcon(statusEl, '✓', 'var(--green)', 'Published', result.url || '', result.url ? 'View Post' : '');
     document.getElementById(`posting-${platform}`).classList.add('posting-success');
   } else {
-    statusEl.innerHTML = `<span style="color:var(--red)">&#10007;</span> Failed: ${result.error || 'unknown error'}`;
+    renderTextWithIcon(statusEl, '✗', 'var(--red)', `Failed: ${result.error || 'unknown error'}`);
     document.getElementById(`posting-${platform}`).classList.add('posting-failed');
   }
 }
@@ -188,13 +207,18 @@ function handlePostingResult({ platform, result }) {
 function handlePostingComplete({ results }) {
   const summary = document.getElementById('complete-summary');
   if (!summary) return;
+  clearChildren(summary);
   const total = Object.keys(results).length;
   const ok = Object.values(results).filter(r => r.success).length;
+  const p = document.createElement('p');
   if (ok === total) {
-    summary.innerHTML = `<p class="summary-ok">All ${total} platforms published successfully!</p>`;
+    p.className = 'summary-ok';
+    p.textContent = `All ${total} platforms published successfully!`;
   } else {
-    summary.innerHTML = `<p class="summary-partial">${ok}/${total} platforms published. Check the results above for details.</p>`;
+    p.className = 'summary-partial';
+    p.textContent = `${ok}/${total} platforms published. Check the results above for details.`;
   }
+  summary.appendChild(p);
 }
 
 function handleComplete() {
@@ -209,7 +233,13 @@ function renderPost(platform, { content, hashtags = [], status = 'pending' }) {
   el.textContent = content;
 
   const tagsEl = document.getElementById(`tags-${platform}`);
-  tagsEl.innerHTML = (hashtags || []).map(t => `<span class="tag">${t}</span>`).join('');
+  clearChildren(tagsEl);
+  for (const tag of (hashtags || [])) {
+    const span = document.createElement('span');
+    span.className = 'tag';
+    span.textContent = tag;
+    tagsEl.appendChild(span);
+  }
 
   const chars = document.getElementById(`chars-${platform}`);
   chars.textContent = `${content.length} / 1900 chars`;
@@ -318,7 +348,7 @@ function handleStopped() {
   section.querySelector('h2').textContent = 'Workflow Stopped';
   section.querySelector('p').textContent = 'The workflow was stopped. You can start a new one.';
   const summary = document.getElementById('complete-summary');
-  if (summary) summary.innerHTML = '';
+  if (summary) clearChildren(summary);
 }
 
 /* ── Image actions ────────────────────────────────────────────────────────── */
@@ -415,7 +445,7 @@ function resetWorkflow() {
   // Clear post content
   for (const p of ['linkedin','facebook','instagram']) {
     document.getElementById(`content-${p}`).textContent = '';
-    document.getElementById(`tags-${p}`).innerHTML = '';
+    clearChildren(document.getElementById(`tags-${p}`));
     document.getElementById(`chars-${p}`).textContent = '';
     updateBadge(p, 'pending');
     updateCardClass(p, 'pending');
@@ -504,6 +534,114 @@ async function handleChangePassword(e) {
     errorEl.style.display = 'block';
     btn.disabled = false;
     btn.textContent = 'Change Password';
+  }
+}
+
+function showReconfigure2FA() {
+  reconfigureLoginToken = null;
+  document.getElementById('totp-modal-overlay').classList.remove('hidden');
+  document.getElementById('totp-reconfig-copy').textContent = 'Confirm your password to generate a new authenticator setup.';
+  document.getElementById('totp-reconfig-form').classList.remove('hidden');
+  document.getElementById('totp-reconfig-setup').classList.add('hidden');
+  document.getElementById('totp-reconfig-password').value = '';
+  document.getElementById('totp-reconfig-code').value = '';
+  document.getElementById('totp-reconfig-error').style.display = 'none';
+  document.getElementById('totp-reconfig-success').style.display = 'none';
+  document.getElementById('totp-reconfig-submit').disabled = false;
+  document.getElementById('totp-reconfig-submit').textContent = 'Start Reconfiguration';
+  document.getElementById('totp-reconfig-verify-submit').disabled = false;
+  document.getElementById('totp-reconfig-verify-submit').textContent = 'Verify New 2FA';
+  document.getElementById('totp-reconfig-password').focus();
+}
+
+function closeReconfigure2FA() {
+  document.getElementById('totp-modal-overlay').classList.add('hidden');
+}
+
+async function handleReconfigure2FA(e) {
+  e.preventDefault();
+  const errorEl = document.getElementById('totp-reconfig-error');
+  const successEl = document.getElementById('totp-reconfig-success');
+  const submitBtn = document.getElementById('totp-reconfig-submit');
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Preparing...';
+
+  try {
+    const res = await authFetch('/auth/reconfigure-2fa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: document.getElementById('totp-reconfig-password').value }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errorEl.textContent = data.detail || 'Unable to start 2FA reconfiguration.';
+      errorEl.style.display = 'block';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Start Reconfiguration';
+      return;
+    }
+
+    reconfigureLoginToken = data.login_token;
+    document.getElementById('totp-reconfig-copy').textContent = data.message || 'Scan the new QR code and verify a code to finish reconfiguring 2FA.';
+    document.getElementById('totp-reconfig-form').classList.add('hidden');
+    document.getElementById('totp-reconfig-setup').classList.remove('hidden');
+    document.getElementById('totp-reconfig-qr').src = `/auth/setup-2fa-qr?token=${encodeURIComponent(reconfigureLoginToken)}`;
+
+    const secretRes = await authFetch(`/auth/setup-2fa-secret?token=${encodeURIComponent(reconfigureLoginToken)}`);
+    const secretData = await secretRes.json();
+    if (!secretRes.ok) {
+      errorEl.textContent = secretData.detail || 'Unable to load the setup key.';
+      errorEl.style.display = 'block';
+      return;
+    }
+    document.getElementById('totp-reconfig-secret').textContent = secretData.secret;
+    document.getElementById('totp-reconfig-code').focus();
+  } catch (err) {
+    errorEl.textContent = 'Connection error. Please try again.';
+    errorEl.style.display = 'block';
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Start Reconfiguration';
+  }
+}
+
+async function handleReconfigure2FAVerify(e) {
+  e.preventDefault();
+  const errorEl = document.getElementById('totp-reconfig-error');
+  const successEl = document.getElementById('totp-reconfig-success');
+  const verifyBtn = document.getElementById('totp-reconfig-verify-submit');
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+  verifyBtn.disabled = true;
+  verifyBtn.textContent = 'Verifying...';
+
+  try {
+    const res = await fetch('/auth/verify-2fa', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        login_token: reconfigureLoginToken,
+        totp_code: document.getElementById('totp-reconfig-code').value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errorEl.textContent = data.detail || 'Unable to verify the new 2FA code.';
+      errorEl.style.display = 'block';
+      verifyBtn.disabled = false;
+      verifyBtn.textContent = 'Verify New 2FA';
+      return;
+    }
+
+    successEl.textContent = '2FA reconfigured successfully.';
+    successEl.style.display = 'block';
+    setTimeout(() => closeReconfigure2FA(), 1500);
+  } catch (err) {
+    errorEl.textContent = 'Connection error. Please try again.';
+    errorEl.style.display = 'block';
+    verifyBtn.disabled = false;
+    verifyBtn.textContent = 'Verify New 2FA';
   }
 }
 

@@ -62,6 +62,28 @@
     }
     .qr-container img { width: 200px; height: 200px; }
     .qr-wrap { text-align: center; }
+    .setup-key {
+      margin: 1rem 0;
+      padding: .9rem 1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .setup-key strong { display: block; color: var(--text); margin-bottom: .45rem; }
+    .setup-key code {
+      display: block;
+      overflow-wrap: anywhere;
+      color: #f8fafc;
+      font-size: .95rem;
+    }
+    .guidance {
+      margin-top: .75rem;
+      padding-top: .75rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: .82rem;
+      line-height: 1.5;
+    }
     .totp-input {
       padding: .75rem 1rem;
       background: var(--surface2);
@@ -134,11 +156,17 @@
             <img id="qr-image" alt="2FA QR Code" />
           </div>
         </div>
+        <div class="setup-key">
+          <strong>Manual setup key</strong>
+          <code id="setup-secret">Loading...</code>
+        </div>
         <p>Then enter the 6-digit code below to complete setup.</p>
+        <p class="guidance">Save the setup key somewhere secure. If you lose your device, you'll need an authenticated reconfiguration to register a new authenticator app.</p>
       </div>
 
       <div id="qr-existing">
-        <p>Enter the code from your authenticator app:</p>
+        <p id="totp-message">Enter the code from your authenticator app:</p>
+        <p class="guidance">2FA is already configured for this account. If you changed devices, sign in first and use the reconfigure option inside the app.</p>
       </div>
 
       <form id="totp-form" onsubmit="handleTotp(event)">
@@ -153,6 +181,23 @@
 
   <script>
     let loginToken = null;
+    let setupSecretLoaded = false;
+
+    async function loadSetupSecret() {
+      const secretEl = document.getElementById('setup-secret');
+      secretEl.textContent = 'Loading...';
+      try {
+        const res = await fetch(`/auth/setup-2fa-secret?token=${encodeURIComponent(loginToken)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          secretEl.textContent = data.detail || 'Unable to load setup key.';
+          return;
+        }
+        secretEl.textContent = data.secret;
+      } catch (err) {
+        secretEl.textContent = 'Unable to load setup key.';
+      }
+    }
 
     async function handleLogin(e) {
       e.preventDefault();
@@ -181,13 +226,23 @@
 
         if (data.require_2fa) {
           loginToken = data.login_token;
+          setupSecretLoaded = false;
           document.getElementById('login-screen').classList.add('hidden');
           document.getElementById('totp-screen').classList.remove('hidden');
+          document.getElementById('totp-message').textContent = data.message || 'Enter the code from your authenticator app:';
+          document.getElementById('totp-code').value = '';
 
           if (data.setup_required) {
             document.getElementById('qr-setup').classList.remove('hidden');
             document.getElementById('qr-existing').classList.add('hidden');
-            document.getElementById('qr-image').src = `/auth/setup-2fa-qr?token=${loginToken}`;
+            document.getElementById('qr-image').src = `/auth/setup-2fa-qr?token=${encodeURIComponent(loginToken)}`;
+            if (!setupSecretLoaded) {
+              await loadSetupSecret();
+              setupSecretLoaded = true;
+            }
+          } else {
+            document.getElementById('qr-setup').classList.add('hidden');
+            document.getElementById('qr-existing').classList.remove('hidden');
           }
           document.getElementById('totp-code').focus();
         }

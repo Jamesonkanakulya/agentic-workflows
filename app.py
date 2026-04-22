@@ -18,8 +18,10 @@ import json
 import logging
 import os
 import secrets
+import sqlite3
 import smtplib
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -48,10 +50,24 @@ sys.path.insert(0, str(Path(__file__).parent / "tools"))
 load_dotenv()
 
 # ── Auth configuration ──────────────────────────────────────────────────────
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 AUTH_USERNAME = os.getenv("AUTH_USERNAME", "admin")
-AUTH_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
-TOTP_SECRET = os.getenv("TOTP_SECRET", "")
+AUTH_BOOTSTRAP_PASSWORD_HASH = os.getenv("AUTH_PASSWORD_HASH", "")
+AUTH_BOOTSTRAP_TOTP_SECRET = os.getenv("TOTP_SECRET", "")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+AUTH_DB_PATH = Path(os.getenv("AUTH_DB_PATH", str(Path(__file__).parent / "data" / "auth.db")))
+COOKIE_SECURE = env_flag("COOKIE_SECURE", False)
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGIN", "").split(",") if origin.strip()]
+ENABLE_DEBUG_API = env_flag("ENABLE_DEBUG_API", False)
+AUTH_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "300"))
+AUTH_RATE_LIMIT_MAX_ATTEMPTS = int(os.getenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "5"))
+AUTH_LOCKOUT_SECONDS = int(os.getenv("AUTH_LOCKOUT_SECONDS", "600"))
 
 if not SESSION_SECRET:
     raise RuntimeError("SESSION_SECRET must be set in .env")
@@ -61,17 +77,227 @@ SESSION_COOKIE = "session_token"
 SESSION_MAX_AGE = 86400  # 24 hours
 TOTP_ISSUER = "SocialPostCreator"
 
-# SMTP configuration for password reset emails
 SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")
 SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
+BOOTSTRAP_ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "")
 
 logger = logging.getLogger("auth")
 
-# Temporary tokens between password step and 2FA step
-pending_2fa: Dict[str, Dict] = {}
-# Password reset tokens: {token: {"created": timestamp}}
-pending_resets: Dict[str, Dict] = {}
+
+class AuthStore:
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+        self._migrate_bootstrap_state()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        with self._connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS auth_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    password_hash TEXT NOT NULL DEFAULT '',
+                    totp_secret TEXT NOT NULL DEFAULT '',
+                    admin_email TEXT NOT NULL DEFAULT '',
+                    updated_at REAL NOT NULL
+                );
+
+                INSERT OR IGNORE INTO auth_state (id, password_hash, totp_secret, admin_email, updated_at)
+                VALUES (1, '', '', '', strftime('%s', 'now'));
+
+                CREATE TABLE IF NOT EXISTS login_tokens (
+                    token TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    pending_totp_secret TEXT NOT NULL DEFAULT '',
+                    allow_reconfigure INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS reset_tokens (
+                    token TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                );
+                """
+            )
+            conn.commit()
+
+    def _migrate_bootstrap_state(self):
+        state = self.get_auth_state()
+        updates = {}
+        if not state["password_hash"] and AUTH_BOOTSTRAP_PASSWORD_HASH:
+            updates["password_hash"] = AUTH_BOOTSTRAP_PASSWORD_HASH
+        if not state["totp_secret"] and AUTH_BOOTSTRAP_TOTP_SECRET:
+            updates["totp_secret"] = AUTH_BOOTSTRAP_TOTP_SECRET
+        if not state["admin_email"] and BOOTSTRAP_ADMIN_EMAIL:
+            updates["admin_email"] = BOOTSTRAP_ADMIN_EMAIL
+        if updates:
+            with self._connect() as conn:
+                set_clause = ", ".join(f"{key} = ?" for key in updates)
+                values = list(updates.values())
+                values.extend([time.time(), 1])
+                conn.execute(f"UPDATE auth_state SET {set_clause}, updated_at = ? WHERE id = ?", values)
+                conn.commit()
+
+    def cleanup_expired_tokens(self):
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("DELETE FROM login_tokens WHERE expires_at <= ?", (now,))
+            conn.execute("DELETE FROM reset_tokens WHERE expires_at <= ?", (now,))
+            conn.commit()
+
+    def get_auth_state(self) -> Dict[str, str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT password_hash, totp_secret, admin_email FROM auth_state WHERE id = 1"
+            ).fetchone()
+        return {
+            "password_hash": row["password_hash"] if row else "",
+            "totp_secret": row["totp_secret"] if row else "",
+            "admin_email": row["admin_email"] if row else "",
+        }
+
+    def get_password_hash(self) -> str:
+        return self.get_auth_state()["password_hash"]
+
+    def set_password_hash(self, password_hash: str):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE auth_state SET password_hash = ?, updated_at = ? WHERE id = 1",
+                (password_hash, time.time()),
+            )
+            conn.commit()
+
+    def get_totp_secret(self) -> str:
+        return self.get_auth_state()["totp_secret"]
+
+    def set_totp_secret(self, secret: str):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE auth_state SET totp_secret = ?, updated_at = ? WHERE id = 1",
+                (secret, time.time()),
+            )
+            conn.commit()
+
+    def clear_totp_secret(self):
+        self.set_totp_secret("")
+
+    def has_totp_secret(self) -> bool:
+        return bool(self.get_totp_secret())
+
+    def get_admin_email(self) -> str:
+        return self.get_auth_state()["admin_email"]
+
+    def create_login_token(self, username: str, allow_reconfigure: bool = False) -> str:
+        self.cleanup_expired_tokens()
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO login_tokens (token, username, created_at, expires_at, allow_reconfigure)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (token, username, now, now + 300, 1 if allow_reconfigure else 0),
+            )
+            conn.commit()
+        return token
+
+    def get_login_token(self, token: str) -> dict | None:
+        self.cleanup_expired_tokens()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM login_tokens WHERE token = ?", (token,)).fetchone()
+        return dict(row) if row else None
+
+    def get_or_create_pending_totp_secret(self, token: str) -> str | None:
+        entry = self.get_login_token(token)
+        if not entry:
+            return None
+        if entry["pending_totp_secret"]:
+            return entry["pending_totp_secret"]
+        secret = pyotp.random_base32()
+        with self._connect() as conn:
+            conn.execute("UPDATE login_tokens SET pending_totp_secret = ? WHERE token = ?", (secret, token))
+            conn.commit()
+        return secret
+
+    def delete_login_token(self, token: str):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM login_tokens WHERE token = ?", (token,))
+            conn.commit()
+
+    def create_reset_token(self) -> str:
+        self.cleanup_expired_tokens()
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO reset_tokens (token, created_at, expires_at) VALUES (?, ?, ?)",
+                (token, now, now + 900),
+            )
+            conn.commit()
+        return token
+
+    def verify_reset_token(self, token: str) -> bool:
+        self.cleanup_expired_tokens()
+        with self._connect() as conn:
+            row = conn.execute("SELECT token FROM reset_tokens WHERE token = ?", (token,)).fetchone()
+        return bool(row)
+
+    def consume_reset_token(self, token: str) -> bool:
+        self.cleanup_expired_tokens()
+        with self._connect() as conn:
+            row = conn.execute("SELECT token FROM reset_tokens WHERE token = ?", (token,)).fetchone()
+            if not row:
+                return False
+            conn.execute("DELETE FROM reset_tokens WHERE token = ?", (token,))
+            conn.commit()
+        return True
+
+
+class AuthRateLimiter:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries: Dict[str, Dict[str, Any]] = {}
+
+    def _prune(self, entry: Dict[str, Any], now: float):
+        entry["failures"] = [ts for ts in entry.get("failures", []) if now - ts <= AUTH_RATE_LIMIT_WINDOW_SECONDS]
+        if entry.get("locked_until", 0) <= now:
+            entry["locked_until"] = 0
+
+    def is_blocked(self, key: str) -> int:
+        now = time.time()
+        with self._lock:
+            entry = self._entries.setdefault(key, {"failures": [], "locked_until": 0})
+            self._prune(entry, now)
+            if entry["locked_until"] > now:
+                return int(entry["locked_until"] - now)
+            return 0
+
+    def record_failure(self, key: str):
+        now = time.time()
+        with self._lock:
+            entry = self._entries.setdefault(key, {"failures": [], "locked_until": 0})
+            self._prune(entry, now)
+            entry["failures"].append(now)
+            if len(entry["failures"]) >= AUTH_RATE_LIMIT_MAX_ATTEMPTS:
+                entry["failures"].clear()
+                entry["locked_until"] = now + AUTH_LOCKOUT_SECONDS
+
+    def reset(self, key: str):
+        with self._lock:
+            self._entries.pop(key, None)
+
+
+auth_store = AuthStore(AUTH_DB_PATH)
+auth_rate_limiter = AuthRateLimiter()
 
 
 def create_session_cookie(username: str) -> str:
@@ -85,45 +311,41 @@ def verify_session_cookie(token: str) -> dict | None:
         return None
 
 
-def create_login_token(username: str) -> str:
-    token = secrets.token_urlsafe(32)
-    pending_2fa[token] = {"username": username, "created": time.time()}
-    return token
+def request_ip(request: Request) -> str:
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
-def consume_login_token(token: str) -> dict | None:
-    entry = pending_2fa.pop(token, None)
-    if not entry or time.time() - entry["created"] > 300:
-        return None
-    return entry
+def rate_limit_key(action: str, request: Request, subject: str = "") -> str:
+    return f"{action}:{request_ip(request)}:{subject.strip().lower()}"
 
 
-def verify_login_token(token: str) -> dict | None:
-    entry = pending_2fa.get(token)
-    if not entry or time.time() - entry["created"] > 300:
-        return None
-    return entry
+def check_rate_limit(action: str, request: Request, subject: str = "") -> JSONResponse | None:
+    key = rate_limit_key(action, request, subject)
+    remaining = auth_rate_limiter.is_blocked(key)
+    if remaining > 0:
+        minutes = max(1, remaining // 60)
+        return JSONResponse(
+            {"detail": f"Too many attempts. Please wait about {minutes} minute(s) and try again."},
+            status_code=429,
+        )
+    return None
 
 
-def create_reset_token() -> str:
-    token = secrets.token_urlsafe(32)
-    pending_resets[token] = {"created": time.time()}
-    return token
+def record_rate_limit_failure(action: str, request: Request, subject: str = ""):
+    auth_rate_limiter.record_failure(rate_limit_key(action, request, subject))
 
 
-def verify_reset_token(token: str) -> bool:
-    entry = pending_resets.get(token)
-    if not entry or time.time() - entry["created"] > 900:  # 15 min expiry
-        pending_resets.pop(token, None)
-        return False
-    return True
+def reset_rate_limit(action: str, request: Request, subject: str = ""):
+    auth_rate_limiter.reset(rate_limit_key(action, request, subject))
 
 
-def consume_reset_token(token: str) -> bool:
-    entry = pending_resets.pop(token, None)
-    if not entry or time.time() - entry["created"] > 900:
-        return False
-    return True
+def cookie_should_be_secure(request: Request) -> bool:
+    if COOKIE_SECURE:
+        return True
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return request.url.scheme == "https" or forwarded_proto.lower() == "https"
 
 
 def send_email(to: str, subject: str, body: str) -> bool:
@@ -144,47 +366,39 @@ def send_email(to: str, subject: str, body: str) -> bool:
         return False
 
 
-def _update_env_var(key: str, value: str):
-    """Update or add a variable in the .env file."""
-    env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        return
-    lines = env_path.read_text(encoding="utf-8").splitlines()
-    new_lines = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}="):
-            new_lines.append(f"{key}={value}")
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        new_lines.append(f"{key}={value}")
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+def current_password_hash() -> str:
+    return auth_store.get_password_hash()
 
 
-def update_env_password_hash(new_hash: str):
-    """Update AUTH_PASSWORD_HASH in .env file."""
-    global AUTH_PASSWORD_HASH
-    AUTH_PASSWORD_HASH = new_hash
-    _update_env_var("AUTH_PASSWORD_HASH", new_hash)
+def current_totp_secret() -> str:
+    return auth_store.get_totp_secret()
 
 
-def _save_totp_secret(secret: str):
-    """Save TOTP_SECRET to .env so the QR setup only happens once."""
-    global TOTP_SECRET
-    TOTP_SECRET = secret
-    _update_env_var("TOTP_SECRET", secret)
-    print(f"\n{'='*60}")
-    print(f"  2FA SETUP COMPLETE — secret saved to .env")
-    print(f"{'='*60}\n")
+def current_admin_email() -> str:
+    return auth_store.get_admin_email()
+
+
+def update_password_hash(new_hash: str):
+    auth_store.set_password_hash(new_hash)
+
+
+def save_totp_secret(secret: str):
+    auth_store.set_totp_secret(secret)
+    logger.info("2FA setup completed and persisted to durable auth storage.")
 
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(title="Social Post Creator")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+if ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+        allow_credentials=True,
+    )
 
-AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/logout",
+AUTH_EXEMPT = {"/login", "/auth/login", "/auth/verify-2fa", "/auth/setup-2fa-qr", "/auth/setup-2fa-secret", "/auth/logout",
                "/auth/forgot-password", "/reset-password", "/auth/reset-password"}
 
 
@@ -194,10 +408,12 @@ async def auth_middleware(request: Request, call_next):
     if path in AUTH_EXEMPT or path.startswith("/static/"):
         return await call_next(request)
     token = request.cookies.get(SESSION_COOKIE)
-    if not token or not verify_session_cookie(token):
+    session_data = verify_session_cookie(token) if token else None
+    if not session_data:
         if path.startswith("/api/"):
-            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+            return JSONResponse({"detail": "Your session expired. Please sign in again."}, status_code=401)
         return RedirectResponse(url="/login", status_code=302)
+    request.state.user = session_data["user"]
     return await call_next(request)
 
 
@@ -519,9 +735,14 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+
 class TotpVerifyRequest(BaseModel):
     login_token: str
     totp_code: str
+
+
+class ReconfigureTotpRequest(BaseModel):
+    current_password: str
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -531,37 +752,53 @@ async def login_page():
 
 
 @app.post("/auth/login")
-async def auth_login(req: LoginRequest):
+async def auth_login(req: LoginRequest, request: Request):
+    limited = check_rate_limit("login", request, req.username)
+    if limited:
+        return limited
+
     if req.username != AUTH_USERNAME:
+        record_rate_limit_failure("login", request, req.username)
         return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
 
-    if not AUTH_PASSWORD_HASH:
+    password_hash = current_password_hash()
+    if not password_hash:
         return JSONResponse({"detail": "Password not configured on server"}, status_code=500)
 
-    if not bcrypt.checkpw(req.password.encode(), AUTH_PASSWORD_HASH.encode()):
+    if not bcrypt.checkpw(req.password.encode(), password_hash.encode()):
+        record_rate_limit_failure("login", request, req.username)
         return JSONResponse({"detail": "Invalid credentials"}, status_code=401)
 
-    login_token = create_login_token(req.username)
+    reset_rate_limit("login", request, req.username)
+    login_token = auth_store.create_login_token(req.username)
+    setup_required = not auth_store.has_totp_secret()
     return {
         "require_2fa": True,
         "login_token": login_token,
-        "setup_required": not bool(TOTP_SECRET),
+        "setup_required": setup_required,
+        "message": (
+            "Scan the QR code and save the setup key to finish securing your account."
+            if setup_required
+            else "2FA is already configured for this account. Enter the 6-digit code from your authenticator app."
+        ),
     }
 
 
 @app.get("/auth/setup-2fa-qr")
 async def setup_2fa_qr(token: str):
-    entry = verify_login_token(token)
+    entry = auth_store.get_login_token(token)
     if not entry:
-        return JSONResponse({"detail": "Invalid or expired token"}, status_code=401)
+        return JSONResponse({"detail": "This setup link is invalid or expired. Please sign in again."}, status_code=401)
 
-    if TOTP_SECRET:
-        return JSONResponse({"detail": "2FA already configured"}, status_code=400)
+    has_existing_secret = auth_store.has_totp_secret()
+    if has_existing_secret and not entry.get("allow_reconfigure"):
+        return JSONResponse({"detail": "2FA is already configured for this account."}, status_code=400)
 
-    new_secret = pyotp.random_base32()
-    entry["pending_totp_secret"] = new_secret
+    pending_secret = auth_store.get_or_create_pending_totp_secret(token)
+    if not pending_secret:
+        return JSONResponse({"detail": "This setup link is invalid or expired. Please sign in again."}, status_code=401)
 
-    totp = pyotp.TOTP(new_secret)
+    totp = pyotp.TOTP(pending_secret)
     uri = totp.provisioning_uri(name=entry["username"], issuer_name=TOTP_ISSUER)
 
     img = qrcode.make(uri, image_factory=qrcode.image.pil.PilImage)
@@ -573,26 +810,53 @@ async def setup_2fa_qr(token: str):
                              headers={"Cache-Control": "no-store"})
 
 
-@app.post("/auth/verify-2fa")
-async def auth_verify_2fa(req: TotpVerifyRequest, response: Response):
-    entry = pending_2fa.get(req.login_token)
-    if not entry or time.time() - entry["created"] > 300:
-        pending_2fa.pop(req.login_token, None)
-        return JSONResponse({"detail": "Invalid or expired login token"}, status_code=401)
+@app.get("/auth/setup-2fa-secret")
+async def setup_2fa_secret(token: str):
+    entry = auth_store.get_login_token(token)
+    if not entry:
+        return JSONResponse({"detail": "This setup link is invalid or expired. Please sign in again."}, status_code=401)
+    if auth_store.has_totp_secret() and not entry.get("allow_reconfigure"):
+        return JSONResponse({"detail": "2FA is already configured for this account."}, status_code=400)
 
-    secret = TOTP_SECRET or entry.get("pending_totp_secret")
+    pending_secret = auth_store.get_or_create_pending_totp_secret(token)
+    if not pending_secret:
+        return JSONResponse({"detail": "This setup link is invalid or expired. Please sign in again."}, status_code=401)
+
+    return {
+        "secret": pending_secret,
+        "issuer": TOTP_ISSUER,
+        "account_name": entry["username"],
+        "message": "Save this setup key in a secure place in case you need to re-add the authenticator app later.",
+    }
+
+
+@app.post("/auth/verify-2fa")
+async def auth_verify_2fa(req: TotpVerifyRequest, request: Request, response: Response):
+    limited = check_rate_limit("totp", request, req.login_token)
+    if limited:
+        return limited
+
+    entry = auth_store.get_login_token(req.login_token)
+    if not entry:
+        return JSONResponse({"detail": "Your sign-in step expired. Please enter your password again."}, status_code=401)
+
+    stored_secret = current_totp_secret()
+    use_pending_secret = bool(entry.get("pending_totp_secret")) and (entry.get("allow_reconfigure") or not stored_secret)
+    secret = entry.get("pending_totp_secret") if use_pending_secret else stored_secret
     if not secret:
-        return JSONResponse({"detail": "No TOTP secret configured"}, status_code=400)
+        return JSONResponse({"detail": "2FA is not ready yet. Restart the sign-in flow to continue."}, status_code=400)
 
     totp = pyotp.TOTP(secret)
     if not totp.verify(req.totp_code, valid_window=1):
-        return JSONResponse({"detail": "Invalid TOTP code"}, status_code=401)
+        record_rate_limit_failure("totp", request, req.login_token)
+        return JSONResponse({"detail": "Invalid 2FA code. Please try the latest code from your authenticator app."}, status_code=401)
 
-    # First-time setup: save secret to .env so QR doesn't appear again
-    if not TOTP_SECRET and entry.get("pending_totp_secret"):
-        _save_totp_secret(entry["pending_totp_secret"])
+    if entry.get("pending_totp_secret") and (entry.get("allow_reconfigure") or not stored_secret):
+        save_totp_secret(entry["pending_totp_secret"])
 
-    pending_2fa.pop(req.login_token, None)
+    auth_store.delete_login_token(req.login_token)
+    reset_rate_limit("totp", request, req.login_token)
+    logger.info("Successful 2FA verification for %s", entry["username"])
 
     session_token = create_session_cookie(entry["username"])
     response.set_cookie(
@@ -600,7 +864,7 @@ async def auth_verify_2fa(req: TotpVerifyRequest, response: Response):
         value=session_token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=cookie_should_be_secure(request),
         max_age=SESSION_MAX_AGE,
         path="/",
     )
@@ -629,9 +893,14 @@ class ChangePasswordRequest(BaseModel):
 
 @app.post("/auth/forgot-password")
 async def forgot_password(req: ForgotPasswordRequest, request: Request):
+    limited = check_rate_limit("forgot-password", request, req.email)
+    if limited:
+        return limited
+
+    admin_email = current_admin_email()
     # Always return success to avoid leaking whether the email is valid
-    if req.email.strip().lower() == ADMIN_EMAIL.strip().lower() and ADMIN_EMAIL:
-        token = create_reset_token()
+    if req.email.strip().lower() == admin_email.strip().lower() and admin_email:
+        token = auth_store.create_reset_token()
         origin = f"{request.url.scheme}://{request.url.netloc}"
         reset_link = f"{origin}/reset-password?token={token}"
         body = f"""
@@ -643,58 +912,84 @@ async def forgot_password(req: ForgotPasswordRequest, request: Request):
         <p style="color:#888;font-size:12px">This link expires in 15 minutes.</p>
         """
         logger.info(f"Password reset requested for {req.email}")
-        sent = send_email(ADMIN_EMAIL, "Password Reset - Social Post Creator", body)
+        sent = send_email(admin_email, "Password Reset - Social Post Creator", body)
         if not sent:
             logger.warning("Failed to send reset email — check SMTP config")
+    reset_rate_limit("forgot-password", request, req.email)
     return {"ok": True, "message": "If that email is registered, a reset link has been sent."}
 
 
 @app.get("/reset-password", response_class=HTMLResponse)
 async def reset_password_page(token: str = ""):
-    if not token or not verify_reset_token(token):
+    if not token or not auth_store.verify_reset_token(token):
         return HTMLResponse("<html><body><h2>Invalid or expired reset link.</h2><p><a href='/login'>Back to Login</a></p></body></html>")
     with open("static/reset-password.html", encoding="utf-8") as f:
         return f.read()
 
 
 @app.post("/auth/reset-password")
-async def reset_password(req: ResetPasswordRequest):
-    if not consume_reset_token(req.token):
+async def reset_password(req: ResetPasswordRequest, request: Request):
+    limited = check_rate_limit("reset-password", request, req.token)
+    if limited:
+        return limited
+
+    if not auth_store.consume_reset_token(req.token):
+        record_rate_limit_failure("reset-password", request, req.token)
         return JSONResponse({"detail": "Invalid or expired reset token"}, status_code=400)
 
     if len(req.new_password) < 8:
         return JSONResponse({"detail": "Password must be at least 8 characters"}, status_code=400)
 
     new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
-    update_env_password_hash(new_hash)
+    update_password_hash(new_hash)
+    reset_rate_limit("reset-password", request, req.token)
 
-    # Notify admin
-    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
-               "<p>Your password for <b>Social Post Creator</b> was reset successfully via the reset link.</p>")
+    admin_email = current_admin_email()
+    if admin_email:
+        send_email(admin_email, "Password Changed - Social Post Creator",
+                   "<p>Your password for <b>Social Post Creator</b> was reset successfully via the reset link.</p>")
 
     return {"ok": True, "message": "Password reset successfully. You can now log in."}
 
 
 @app.post("/auth/change-password")
 async def change_password(req: ChangePasswordRequest, request: Request):
-    # This route requires authentication (not in AUTH_EXEMPT)
-    if not AUTH_PASSWORD_HASH:
+    password_hash = current_password_hash()
+    if not password_hash:
         return JSONResponse({"detail": "Password not configured"}, status_code=500)
 
-    if not bcrypt.checkpw(req.current_password.encode(), AUTH_PASSWORD_HASH.encode()):
+    if not bcrypt.checkpw(req.current_password.encode(), password_hash.encode()):
         return JSONResponse({"detail": "Current password is incorrect"}, status_code=401)
 
     if len(req.new_password) < 8:
         return JSONResponse({"detail": "New password must be at least 8 characters"}, status_code=400)
 
     new_hash = bcrypt.hashpw(req.new_password.encode(), bcrypt.gensalt()).decode()
-    update_env_password_hash(new_hash)
+    update_password_hash(new_hash)
 
-    # Notify admin
-    send_email(ADMIN_EMAIL, "Password Changed - Social Post Creator",
-               "<p>Your password for <b>Social Post Creator</b> was changed successfully.</p>")
+    admin_email = current_admin_email()
+    if admin_email:
+        send_email(admin_email, "Password Changed - Social Post Creator",
+                   "<p>Your password for <b>Social Post Creator</b> was changed successfully.</p>")
 
     return {"ok": True, "message": "Password changed successfully."}
+
+
+@app.post("/auth/reconfigure-2fa")
+async def reconfigure_2fa(req: ReconfigureTotpRequest, request: Request):
+    password_hash = current_password_hash()
+    if not password_hash:
+        return JSONResponse({"detail": "Password not configured"}, status_code=500)
+    if not bcrypt.checkpw(req.current_password.encode(), password_hash.encode()):
+        return JSONResponse({"detail": "Current password is incorrect"}, status_code=401)
+
+    login_token = auth_store.create_login_token(request.state.user, allow_reconfigure=True)
+    logger.info("2FA reconfiguration initiated for %s", request.state.user)
+    return {
+        "ok": True,
+        "login_token": login_token,
+        "message": "Scan the new QR code and verify a code to finish reconfiguring 2FA.",
+    }
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
@@ -723,6 +1018,8 @@ async def get_session(sid: str):
 @app.get("/api/debug/{sid}")
 async def debug_session(sid: str):
     """Return session state with full error detail, formatted for easy reading."""
+    if not ENABLE_DEBUG_API:
+        return JSONResponse({"detail": "Debug API is disabled in this environment."}, status_code=404)
     if sid not in sessions:
         return JSONResponse({"error": "Session not found"}, status_code=404)
     s = sessions[sid]

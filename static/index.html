@@ -21,6 +21,7 @@
         <button id="new-workflow-btn" class="btn-ghost hidden" onclick="window.open('/', '_blank')">
           + New Workflow
         </button>
+        <button class="btn-ghost" onclick="showReconfigure2FA()" title="Reconfigure 2FA">Reconfigure 2FA</button>
         <button class="btn-ghost" onclick="showChangePassword()" title="Change password">Change Password</button>
         <button class="btn-ghost" onclick="logout()" title="Sign out">Logout</button>
       </div>
@@ -259,6 +260,43 @@
       </form>
       <p id="pwd-error" style="color:var(--red);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
       <p id="pwd-success" style="color:var(--green,#22c55e);font-size:.85rem;margin-top:.5rem;text-align:center;display:none"></p>
+    </div>
+  </div>
+
+  <div id="totp-modal-overlay" class="modal-overlay hidden" onclick="if(event.target===this)closeReconfigure2FA()">
+    <div class="modal-card">
+      <h2 style="color:var(--text);margin-bottom:.5rem;font-size:1.25rem">Reconfigure 2FA</h2>
+      <p id="totp-reconfig-copy" style="color:var(--muted);font-size:.85rem;margin-bottom:1rem">Confirm your password to generate a new authenticator setup.</p>
+
+      <form id="totp-reconfig-form" onsubmit="handleReconfigure2FA(event)" style="display:flex;flex-direction:column;gap:.75rem">
+        <input id="totp-reconfig-password" type="password" placeholder="Current password" required autocomplete="current-password"
+               style="padding:.65rem .85rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;outline:none" />
+        <div style="display:flex;gap:.5rem;margin-top:.25rem">
+          <button type="submit" id="totp-reconfig-submit" style="flex:1;padding:.65rem;background:var(--primary);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Start Reconfiguration</button>
+          <button type="button" onclick="closeReconfigure2FA()" style="padding:.65rem 1rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;cursor:pointer">Cancel</button>
+        </div>
+      </form>
+
+      <div id="totp-reconfig-setup" class="hidden" style="margin-top:1rem">
+        <div style="display:flex;justify-content:center;margin-bottom:1rem">
+          <div style="background:#fff;padding:1rem;border-radius:8px;display:inline-block">
+            <img id="totp-reconfig-qr" alt="New 2FA QR Code" style="width:200px;height:200px" />
+          </div>
+        </div>
+        <div style="padding:.9rem 1rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:.75rem">
+          <strong style="display:block;color:var(--text);margin-bottom:.45rem">Manual setup key</strong>
+          <code id="totp-reconfig-secret" style="display:block;overflow-wrap:anywhere;color:#f8fafc;font-size:.95rem">Loading...</code>
+        </div>
+        <p style="color:var(--muted);font-size:.82rem;line-height:1.5;margin-bottom:.75rem">Use the QR code or setup key in your authenticator app, then enter the new 6-digit code to finish.</p>
+        <form id="totp-reconfig-verify-form" onsubmit="handleReconfigure2FAVerify(event)" style="display:flex;flex-direction:column;gap:.75rem">
+          <input id="totp-reconfig-code" type="text" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" placeholder="000000" required autocomplete="one-time-code"
+                 style="padding:.75rem 1rem;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:1.2rem;text-align:center;letter-spacing:.4rem;outline:none" />
+          <button type="submit" id="totp-reconfig-verify-submit" style="padding:.65rem;background:var(--primary);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Verify New 2FA</button>
+        </form>
+      </div>
+
+      <p id="totp-reconfig-error" style="color:var(--red);font-size:.85rem;margin-top:.75rem;text-align:center;display:none"></p>
+      <p id="totp-reconfig-success" style="color:var(--green,#22c55e);font-size:.85rem;margin-top:.75rem;text-align:center;display:none"></p>
     </div>
   </div>
 

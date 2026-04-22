@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -63,6 +64,16 @@ def load_trends(trends_file: Optional[str]) -> str:
     except Exception as e:
         logger.warning(f"Could not load trends file: {e}")
         return ""
+
+
+def clean_post_text(text: str) -> str:
+    """Normalize model output into clean paragraph text."""
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"[*_`#]+", "", cleaned)
+    cleaned = re.sub(r"^[\-\u2022]+\s*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
 
 
 def generate_posts(topic: str, trends_context: str, additional_context: str = "") -> Dict[str, Any]:
@@ -118,6 +129,9 @@ Requirements:
 - Include 3-5 relevant hashtags per platform that match the topic's domain
 - Use platform-appropriate language and style
 - Ensure posts are engaging and feel authentic to the topic
+- Write in clean plain-text paragraphs only
+- Do not use markdown, bold markers, bullets, headings, or surrounding quotation marks
+- Do not include **, __, backticks, or list formatting inside the post text
 
 Output your response as a JSON object with this exact structure:
 {
@@ -137,7 +151,7 @@ Output your response as a JSON object with this exact structure:
 {trends_context}
 
 Write posts that are fully focused on the topic above. Stay in the topic's domain and use the
-trend research as supporting context only. Generate posts for LinkedIn, Facebook, and Instagram."""
+trend research as supporting context only. Be creative and fresh, but return clean paragraph text for LinkedIn, Facebook, and Instagram."""
 
     try:
         response = client.complete(
@@ -165,6 +179,10 @@ trend research as supporting context only. Generate posts for LinkedIn, Facebook
             content = content[start:end].strip()
 
         posts = json.loads(content)
+
+        for platform in CHAR_LIMITS:
+            if platform in posts:
+                posts[platform] = clean_post_text(posts[platform])
 
         # Validate character limits
         for platform, limit in CHAR_LIMITS.items():
