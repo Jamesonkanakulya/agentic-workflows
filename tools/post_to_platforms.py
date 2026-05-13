@@ -180,6 +180,84 @@ def _linkedin_upload_image(
     return image_urn
 
 
+def _linkedin_share_payload(post_text: str, author_urn: str, image_url: Optional[str]) -> Dict[str, Any]:
+    """Build a legacy Shares API payload for tokens without REST Posts access."""
+    payload = {
+        'owner': author_urn,
+        'text': {
+            'text': post_text
+        },
+        'subject': post_text[:80] or 'LinkedIn update',
+        'distribution': {
+            'linkedInDistributionTarget': {}
+        }
+    }
+
+    if image_url:
+        payload['content'] = {
+            'contentEntities': [
+                {
+                    'entityLocation': image_url,
+                    'thumbnails': [
+                        {
+                            'resolvedUrl': image_url
+                        }
+                    ]
+                }
+            ],
+            'title': post_text[:80] or 'LinkedIn update'
+        }
+
+    return payload
+
+
+def _post_to_linkedin_shares(
+    post_text: str,
+    image_url: Optional[str],
+    access_token: str,
+    author_urn: str
+) -> Dict[str, Any]:
+    """Fallback to the legacy Shares API when REST Posts is not available."""
+    logger.info("Falling back to LinkedIn Shares API...")
+    response = requests.post(
+        'https://api.linkedin.com/v2/shares',
+        headers={
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json',
+            'X-Restli-Protocol-Version': '2.0.0'
+        },
+        json=_linkedin_share_payload(post_text, author_urn, image_url),
+        timeout=30
+    )
+
+    if response.status_code in [200, 201]:
+        post_id = response.headers.get('x-restli-id', '')
+        if not post_id:
+            try:
+                data = response.json()
+                post_id = data.get('activity') or data.get('id', '')
+            except ValueError:
+                post_id = ''
+
+        logger.info(f"LinkedIn share created: {post_id}")
+        return {
+            'success': True,
+            'platform': 'linkedin',
+            'post_id': post_id,
+            'url': f'https://www.linkedin.com/feed/update/{post_id}' if post_id else '',
+            'timestamp': datetime.now().isoformat()
+        }
+
+    logger.error(f"LinkedIn Shares API error: {response.status_code}")
+    logger.error(f"Response: {response.text}")
+    return {
+        'success': False,
+        'platform': 'linkedin',
+        'error': response.text or f"LinkedIn Shares API returned {response.status_code}",
+        'timestamp': datetime.now().isoformat()
+    }
+
+
 def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict) -> Dict[str, Any]:
     """
     Post to LinkedIn.
@@ -260,6 +338,8 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
         else:
             logger.error(f"LinkedIn API error: {response.status_code}")
             logger.error(f"Response: {response.text}")
+            if response.status_code == 403:
+                return _post_to_linkedin_shares(post_text, image_url, access_token, author_urn)
             return {
                 'success': False,
                 'platform': 'linkedin',

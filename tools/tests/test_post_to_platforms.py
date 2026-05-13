@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import post_to_platforms
 from post_to_platforms import (
     _resolve_linkedin_author_urn,
+    _linkedin_share_payload,
     load_environment,
     post_to_linkedin,
 )
@@ -191,3 +192,62 @@ class TestLinkedInPosting:
             }
         }
 
+    def test_rest_posts_403_falls_back_to_shares_api(self, monkeypatch):
+        calls = []
+
+        def fake_post(url, headers, json, timeout):
+            calls.append((url, json))
+            if url == 'https://api.linkedin.com/rest/posts':
+                return FakeResponse(403, text='{"message":"","status":403}')
+            return FakeResponse(201, {'activity': 'urn:li:activity:333'})
+
+        monkeypatch.setattr(post_to_platforms.requests, 'post', fake_post)
+
+        result = post_to_linkedin(
+            'Fallback post',
+            None,
+            {
+                'access_token': 'test-token',
+                'author_urn': 'urn:li:person:mb5LMCFt_K',
+                'linkedin_version': '202601',
+            },
+        )
+
+        assert result['success'] is True
+        assert result['post_id'] == 'urn:li:activity:333'
+        assert calls[0][0] == 'https://api.linkedin.com/rest/posts'
+        assert calls[1] == (
+            'https://api.linkedin.com/v2/shares',
+            {
+                'owner': 'urn:li:person:mb5LMCFt_K',
+                'text': {
+                    'text': 'Fallback post'
+                },
+                'subject': 'Fallback post',
+                'distribution': {
+                    'linkedInDistributionTarget': {}
+                }
+            }
+        )
+
+    def test_share_payload_includes_image_link_card(self):
+        payload = _linkedin_share_payload(
+            'Share with image',
+            'urn:li:person:mb5LMCFt_K',
+            'https://cdn.example.test/post.png',
+        )
+
+        assert payload['owner'] == 'urn:li:person:mb5LMCFt_K'
+        assert payload['content'] == {
+            'contentEntities': [
+                {
+                    'entityLocation': 'https://cdn.example.test/post.png',
+                    'thumbnails': [
+                        {
+                            'resolvedUrl': 'https://cdn.example.test/post.png'
+                        }
+                    ]
+                }
+            ],
+            'title': 'Share with image'
+        }
