@@ -42,8 +42,9 @@ def load_environment():
     credentials = {
         'linkedin': {
             'access_token': os.getenv('LINKEDIN_ACCESS_TOKEN'),
-            'member_urn': os.getenv('LINKEDIN_MEMBER_URN'),
-            'person_urn': os.getenv('LINKEDIN_PERSON_URN')
+            'author_urn': os.getenv('LINKEDIN_AUTHOR_URN') or os.getenv('LINKEDIN_PERSON_URN'),
+            'person_urn': os.getenv('LINKEDIN_PERSON_URN'),
+            'linkedin_version': os.getenv('LINKEDIN_VERSION', '202601')
         },
         'facebook': {
             'access_token': os.getenv('FACEBOOK_ACCESS_TOKEN'),
@@ -83,64 +84,76 @@ def load_image_url(image_url_file: Optional[str], image_url: Optional[str]) -> O
     return None
 
 
-LINKEDIN_AUTHOR_URN_RE = re.compile(r'^urn:li:(member|company):\d+$')
+LINKEDIN_AUTHOR_URN_RE = re.compile(r'^urn:li:(person:[A-Za-z0-9_-]+|organization:\d+)$')
 
 
 def _resolve_linkedin_author_urn(credentials: Dict) -> str:
-    """Return a LinkedIn author/owner URN accepted by UGC post APIs."""
-    author_urn = credentials.get('member_urn') or credentials.get('person_urn')
+    """Return a LinkedIn author/owner URN accepted by the REST Posts API."""
+    author_urn = credentials.get('author_urn') or credentials.get('person_urn')
 
     if not author_urn:
-        raise ValueError("LinkedIn member URN not configured")
+        raise ValueError("LinkedIn author URN not configured")
 
-    if author_urn.startswith('urn:li:person:'):
+    if author_urn.startswith('urn:li:member:'):
         raise ValueError(
-            "LinkedIn person URNs are not accepted for posting. "
-            "Use LINKEDIN_MEMBER_URN=urn:li:member:<numeric_id> instead."
+            "LinkedIn member URNs were used by the old UGC API path. "
+            "Use LINKEDIN_AUTHOR_URN=urn:li:person:<id> for personal-profile posting."
         )
 
     if not LINKEDIN_AUTHOR_URN_RE.match(author_urn):
         raise ValueError(
-            "LinkedIn author URN must match urn:li:member:<digits> "
-            "or urn:li:company:<digits>"
+            "LinkedIn author URN must match urn:li:person:<id> "
+            "or urn:li:organization:<digits>"
         )
 
     return author_urn
 
 
-def _linkedin_upload_image(access_token: str, owner_urn: str, image_url: str) -> Optional[str]:
-    """Upload an image to LinkedIn and return the asset URN."""
-    headers = {
+def _linkedin_headers(access_token: str, linkedin_version: str) -> Dict[str, str]:
+    """Build headers required by LinkedIn REST APIs."""
+    return {
         'Authorization': f'Bearer {access_token}',
         'Content-Type': 'application/json',
+        'Linkedin-Version': linkedin_version,
         'X-Restli-Protocol-Version': '2.0.0'
     }
 
-    # Step 1: Register the upload
-    register_body = {
-        'registerUploadRequest': {
-            'recipes': ['urn:li:digitalmediaRecipe:feedshare-image'],
-            'owner': owner_urn,
-            'serviceRelationships': [
-                {'relationshipType': 'OWNER', 'identifier': 'urn:li:userGeneratedContent'}
-            ]
+
+def _linkedin_upload_image(
+    access_token: str,
+    owner_urn: str,
+    image_url: str,
+    linkedin_version: str
+) -> Optional[str]:
+    """Upload an image to LinkedIn and return the image URN."""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+        'Linkedin-Version': linkedin_version,
+        'X-Restli-Protocol-Version': '2.0.0'
+    }
+
+    # Step 1: Initialize the upload
+    initialize_body = {
+        'initializeUploadRequest': {
+            'owner': owner_urn
         }
     }
 
-    reg_resp = requests.post(
-        'https://api.linkedin.com/v2/assets?action=registerUpload',
+    init_resp = requests.post(
+        'https://api.linkedin.com/rest/images?action=initializeUpload',
         headers=headers,
-        json=register_body,
+        json=initialize_body,
         timeout=30
     )
 
-    if reg_resp.status_code not in [200, 201]:
-        logger.error(f"LinkedIn image register failed: {reg_resp.status_code} {reg_resp.text}")
+    if init_resp.status_code not in [200, 201]:
+        logger.error(f"LinkedIn image initialize failed: {init_resp.status_code} {init_resp.text}")
         return None
 
-    reg_data = reg_resp.json()
-    upload_url = reg_data['value']['uploadMechanism']['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']['uploadUrl']
-    asset_urn = reg_data['value']['asset']
+    init_data = init_resp.json()
+    upload_url = init_data['value']['uploadUrl']
+    image_urn = init_data['value']['image']
 
     # Step 2: Download the image from our R2 URL
     img_resp = requests.get(image_url, timeout=30)
@@ -163,8 +176,8 @@ def _linkedin_upload_image(access_token: str, owner_urn: str, image_url: str) ->
         logger.error(f"LinkedIn image upload failed: {upload_resp.status_code} {upload_resp.text}")
         return None
 
-    logger.info(f"LinkedIn image uploaded: {asset_urn}")
-    return asset_urn
+    logger.info(f"LinkedIn image uploaded: {image_urn}")
+    return image_urn
 
 
 def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict) -> Dict[str, Any]:
@@ -180,6 +193,7 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
         Dictionary with post URL and ID
     """
     access_token = credentials.get('access_token')
+    linkedin_version = credentials.get('linkedin_version', '202601')
 
     if not access_token:
         raise ValueError("LinkedIn credentials not configured")
@@ -188,53 +202,53 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
 
     logger.info("Posting to LinkedIn...")
 
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json',
-        'X-Restli-Protocol-Version': '2.0.0'
-    }
+    headers = _linkedin_headers(access_token, linkedin_version)
 
     # Upload image to LinkedIn if provided
-    media_category = 'NONE'
-    media_list = []
+    content = {}
     if image_url:
-        asset_urn = _linkedin_upload_image(access_token, author_urn, image_url)
-        if asset_urn:
-            media_category = 'IMAGE'
-            media_list = [{'status': 'READY', 'media': asset_urn}]
+        image_urn = _linkedin_upload_image(access_token, author_urn, image_url, linkedin_version)
+        if image_urn:
+            content = {
+                'media': {
+                    'id': image_urn
+                }
+            }
         else:
             logger.warning("Image upload failed, posting without image")
 
-    # Build share content
-    share_content = {
+    # Build REST Posts API content
+    post_content = {
         'author': author_urn,
-        'lifecycleState': 'PUBLISHED',
-        'specificContent': {
-            'com.linkedin.ugc.ShareContent': {
-                'shareCommentary': {
-                    'text': post_text
-                },
-                'shareMediaCategory': media_category
-            }
+        'commentary': post_text,
+        'visibility': 'PUBLIC',
+        'distribution': {
+            'feedDistribution': 'MAIN_FEED',
+            'targetEntities': [],
+            'thirdPartyDistributionChannels': []
         },
-        'visibility': {
-            'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC'
-        }
+        'lifecycleState': 'PUBLISHED',
+        'isReshareDisabledByAuthor': False
     }
 
-    if media_list:
-        share_content['specificContent']['com.linkedin.ugc.ShareContent']['media'] = media_list
+    if content:
+        post_content['content'] = content
 
     try:
         response = requests.post(
-            'https://api.linkedin.com/v2/ugcPosts',
+            'https://api.linkedin.com/rest/posts',
             headers=headers,
-            json=share_content,
+            json=post_content,
             timeout=30
         )
 
         if response.status_code in [200, 201]:
-            post_id = response.json().get('id', '')
+            post_id = response.headers.get('x-restli-id', '')
+            if not post_id:
+                try:
+                    post_id = response.json().get('id', '')
+                except ValueError:
+                    post_id = ''
             logger.info(f"LinkedIn post created: {post_id}")
             return {
                 'success': True,
