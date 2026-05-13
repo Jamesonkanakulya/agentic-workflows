@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.generate_content import clean_post_text
+from tools.generate_content import clean_post_text, normalize_posts
 
 
 def load_app_module(tmp_path, monkeypatch):
@@ -115,3 +115,44 @@ def test_clean_post_text_removes_markdown_artifacts():
     assert "__" not in cleaned
     assert "`" not in cleaned
     assert cleaned.startswith("Bold intro")
+
+
+def test_normalize_posts_moves_hashtags_out_of_body_text():
+    raw_posts = {
+        "linkedin": "**Bold intro**\n\nA clean paragraph about hiring trends. #Hiring #Careers",
+        "facebook": "Plain body copy\n#Community #Careers",
+        "instagram": "Visual hook with #Growth",
+        "hashtags": {
+            "linkedin": ["#Leadership"],
+            "facebook": [],
+            "instagram": ["#Growth", "#Brand"]
+        }
+    }
+
+    normalized = normalize_posts(raw_posts)
+
+    assert normalized["linkedin"] == "Bold intro\n\nA clean paragraph about hiring trends."
+    assert normalized["facebook"] == "Plain body copy"
+    assert normalized["instagram"] == "Visual hook with"
+    assert normalized["hashtags"]["linkedin"] == ["#Leadership", "#Hiring", "#Careers"]
+    assert normalized["hashtags"]["facebook"] == ["#Community", "#Careers"]
+    assert normalized["hashtags"]["instagram"] == ["#Growth", "#Brand"]
+
+
+def test_normalize_posts_keeps_body_plain_text_without_hash_symbols():
+    raw_posts = {
+        "linkedin": "Paragraph one.\n\nParagraph two with #Topic and **formatting**.",
+        "facebook": "",
+        "instagram": "",
+        "hashtags": {
+            "linkedin": [],
+            "facebook": [],
+            "instagram": []
+        }
+    }
+
+    normalized = normalize_posts(raw_posts)
+
+    assert "#" not in normalized["linkedin"]
+    assert "**" not in normalized["linkedin"]
+    assert normalized["hashtags"]["linkedin"] == ["#Topic"]

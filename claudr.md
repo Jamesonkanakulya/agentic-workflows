@@ -278,6 +278,11 @@ token.json         # Google OAuth tokens (gitignored)
 - Never print `LINKEDIN_ACCESS_TOKEN` while debugging. If it appears in logs or chat, rotate it and update `.env`.
 - Real LinkedIn post tests create public posts. Only run them when the user explicitly approves and expects to delete the test post.
 
+### Post Formatting
+- Social post body text should render as clean plain-text paragraphs only.
+- Hashtags belong in the `hashtags` arrays and should appear in the UI hashtag section at the bottom of each card, not inside the main body text.
+- Both `tools/generate_content.py` and `tools/revise_content.py` should normalize model output by stripping markdown artifacts and extracting stray hashtags from the body text.
+
 ---
 
 ## Quality Standards

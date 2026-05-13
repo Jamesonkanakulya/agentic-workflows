@@ -38,6 +38,8 @@ CHAR_LIMITS = {
     'instagram': 1900
 }
 
+HASHTAG_RE = re.compile(r'(?<!\w)#[A-Za-z0-9_]+')
+
 
 def load_environment():
     """Load environment variables from .env file."""
@@ -74,6 +76,56 @@ def clean_post_text(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     return cleaned.strip()
+
+
+def extract_hashtags(text: str) -> list[str]:
+    """Extract unique hashtags while preserving first-seen order."""
+    seen = set()
+    tags = []
+    for tag in HASHTAG_RE.findall(text or ""):
+        normalized = tag if tag.startswith("#") else f"#{tag}"
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        tags.append(normalized)
+    return tags
+
+
+def strip_hashtags_from_text(text: str) -> str:
+    """Remove hashtags from body text and normalize paragraph spacing."""
+    stripped = HASHTAG_RE.sub("", text or "")
+    stripped = re.sub(r"[ \t]+\n", "\n", stripped)
+    stripped = re.sub(r"\n[ \t]+", "\n", stripped)
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped)
+    stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+    return stripped.strip(" \n")
+
+
+def normalize_posts(posts: Dict[str, Any]) -> Dict[str, Any]:
+    """Ensure post bodies are plain paragraphs and hashtags live in hashtag arrays."""
+    posts = dict(posts or {})
+    hashtag_map = dict(posts.get("hashtags") or {})
+
+    for platform in CHAR_LIMITS:
+        raw_text = posts.get(platform, "")
+        body_tags = extract_hashtags(raw_text)
+        listed_tags = extract_hashtags(" ".join(hashtag_map.get(platform, [])))
+        merged_tags = []
+        seen = set()
+        for tag in listed_tags + body_tags:
+            lowered = tag.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            merged_tags.append(tag)
+
+        cleaned_text = clean_post_text(strip_hashtags_from_text(raw_text))
+        posts[platform] = cleaned_text
+        hashtag_map[platform] = merged_tags
+
+    posts["hashtags"] = hashtag_map
+    return posts
 
 
 def generate_posts(topic: str, trends_context: str, additional_context: str = "") -> Dict[str, Any]:
@@ -178,11 +230,7 @@ trend research as supporting context only. Be creative and fresh, but return cle
             end = content.find('```', start)
             content = content[start:end].strip()
 
-        posts = json.loads(content)
-
-        for platform in CHAR_LIMITS:
-            if platform in posts:
-                posts[platform] = clean_post_text(posts[platform])
+        posts = normalize_posts(json.loads(content))
 
         # Validate character limits
         for platform, limit in CHAR_LIMITS.items():

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from dotenv import load_dotenv
+from generate_content import CHAR_LIMITS, normalize_posts
 
 # Setup logging
 logging.basicConfig(
@@ -29,14 +30,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Character limits for each platform
-CHAR_LIMITS = {
-    'linkedin': 1900,
-    'facebook': 1900,
-    'instagram': 1900
-}
-
 
 def load_environment():
     """Load environment variables from .env file."""
@@ -106,6 +99,9 @@ Guidelines:
 - Keep each post ≤1900 characters
 - Preserve the core message and domain while incorporating the feedback
 - Ensure revised posts remain engaging and authentic to the topic
+- Write in clean plain-text paragraphs only
+- Do not use markdown, bold markers, bullets, headings, or surrounding quotation marks
+- Keep hashtags out of the main post body and return them in the `hashtags` arrays
 
 Output your response as a JSON object with the same structure as the input:
 {
@@ -151,7 +147,7 @@ Please revise the posts according to this feedback while maintaining platform be
             end = content.find('```', start)
             content = content[start:end].strip()
 
-        revised_posts = json.loads(content)
+        revised_posts = normalize_posts(json.loads(content))
 
         # Validate character limits
         for platform, limit in CHAR_LIMITS.items():
