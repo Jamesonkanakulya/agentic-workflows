@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -41,6 +42,7 @@ def load_environment():
     credentials = {
         'linkedin': {
             'access_token': os.getenv('LINKEDIN_ACCESS_TOKEN'),
+            'member_urn': os.getenv('LINKEDIN_MEMBER_URN'),
             'person_urn': os.getenv('LINKEDIN_PERSON_URN')
         },
         'facebook': {
@@ -81,7 +83,32 @@ def load_image_url(image_url_file: Optional[str], image_url: Optional[str]) -> O
     return None
 
 
-def _linkedin_upload_image(access_token: str, person_urn: str, image_url: str) -> Optional[str]:
+LINKEDIN_AUTHOR_URN_RE = re.compile(r'^urn:li:(member|company):\d+$')
+
+
+def _resolve_linkedin_author_urn(credentials: Dict) -> str:
+    """Return a LinkedIn author/owner URN accepted by UGC post APIs."""
+    author_urn = credentials.get('member_urn') or credentials.get('person_urn')
+
+    if not author_urn:
+        raise ValueError("LinkedIn member URN not configured")
+
+    if author_urn.startswith('urn:li:person:'):
+        raise ValueError(
+            "LinkedIn person URNs are not accepted for posting. "
+            "Use LINKEDIN_MEMBER_URN=urn:li:member:<numeric_id> instead."
+        )
+
+    if not LINKEDIN_AUTHOR_URN_RE.match(author_urn):
+        raise ValueError(
+            "LinkedIn author URN must match urn:li:member:<digits> "
+            "or urn:li:company:<digits>"
+        )
+
+    return author_urn
+
+
+def _linkedin_upload_image(access_token: str, owner_urn: str, image_url: str) -> Optional[str]:
     """Upload an image to LinkedIn and return the asset URN."""
     headers = {
         'Authorization': f'Bearer {access_token}',
@@ -93,7 +120,7 @@ def _linkedin_upload_image(access_token: str, person_urn: str, image_url: str) -
     register_body = {
         'registerUploadRequest': {
             'recipes': ['urn:li:digitalmediaRecipe:feedshare-image'],
-            'owner': person_urn,
+            'owner': owner_urn,
             'serviceRelationships': [
                 {'relationshipType': 'OWNER', 'identifier': 'urn:li:userGeneratedContent'}
             ]
@@ -153,10 +180,11 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
         Dictionary with post URL and ID
     """
     access_token = credentials.get('access_token')
-    person_urn = credentials.get('person_urn')
 
-    if not access_token or not person_urn:
+    if not access_token:
         raise ValueError("LinkedIn credentials not configured")
+
+    author_urn = _resolve_linkedin_author_urn(credentials)
 
     logger.info("Posting to LinkedIn...")
 
@@ -170,7 +198,7 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
     media_category = 'NONE'
     media_list = []
     if image_url:
-        asset_urn = _linkedin_upload_image(access_token, person_urn, image_url)
+        asset_urn = _linkedin_upload_image(access_token, author_urn, image_url)
         if asset_urn:
             media_category = 'IMAGE'
             media_list = [{'status': 'READY', 'media': asset_urn}]
@@ -179,7 +207,7 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
 
     # Build share content
     share_content = {
-        'author': person_urn,
+        'author': author_urn,
         'lifecycleState': 'PUBLISHED',
         'specificContent': {
             'com.linkedin.ugc.ShareContent': {

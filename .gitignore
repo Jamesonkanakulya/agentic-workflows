@@ -7,6 +7,8 @@ token.json
 # Temporary workflow files
 .tmp/
 *.tmp
+data/*.db
+data/*.db-*
 
 # Python
 __pycache__/
