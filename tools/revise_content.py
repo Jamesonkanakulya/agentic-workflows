@@ -99,6 +99,7 @@ Guidelines:
 - Keep each post ≤1900 characters
 - Preserve the core message and domain while incorporating the feedback
 - Ensure revised posts remain engaging and authentic to the topic
+- Return 5-15 relevant hashtags per platform
 - Write in clean plain-text paragraphs only
 - Do not use markdown, bold markers, bullets, headings, or surrounding quotation marks
 - Keep hashtags out of the main post body and return them in the `hashtags` arrays

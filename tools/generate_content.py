@@ -37,8 +37,16 @@ CHAR_LIMITS = {
     'facebook': 1900,
     'instagram': 1900
 }
+MIN_HASHTAGS = 5
+MAX_HASHTAGS = 15
 
 HASHTAG_RE = re.compile(r'(?<!\w)#[A-Za-z0-9_]+')
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9']+")
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "for",
+    "from", "has", "have", "how", "in", "into", "is", "it", "its", "of", "on", "or",
+    "our", "that", "the", "their", "this", "to", "we", "with", "your"
+}
 
 
 def load_environment():
@@ -92,6 +100,61 @@ def extract_hashtags(text: str) -> list[str]:
     return tags
 
 
+def _tag_from_words(words: list[str]) -> str:
+    return "#" + "".join(word[:1].upper() + word[1:].lower() for word in words if word)
+
+
+def generate_fallback_hashtags(text: str, existing_tags: list[str], min_count: int = MIN_HASHTAGS) -> list[str]:
+    """Generate additional topic-relevant hashtags from body text when the model returns too few."""
+    tags = list(existing_tags)
+    seen = {tag.lower() for tag in tags}
+
+    words = [match.group(0) for match in WORD_RE.finditer(text or "")]
+    filtered = []
+    for word in words:
+        lowered = word.lower()
+        if len(lowered) < 4 or lowered in STOPWORDS:
+            continue
+        filtered.append(word)
+
+    candidates = []
+    for word in filtered:
+        tag = _tag_from_words([word])
+        if tag.lower() not in seen:
+            candidates.append(tag)
+
+    for idx in range(len(filtered) - 1):
+        pair = [filtered[idx], filtered[idx + 1]]
+        tag = _tag_from_words(pair)
+        if tag.lower() not in seen and tag not in candidates:
+            candidates.append(tag)
+
+    for tag in candidates:
+        tags.append(tag)
+        seen.add(tag.lower())
+        if len(tags) >= min_count:
+            break
+
+    return tags
+
+
+def normalize_hashtag_list(body_text: str, tags: list[str]) -> list[str]:
+    """Keep hashtags dynamic but within the allowed range."""
+    deduped = []
+    seen = set()
+    for tag in tags:
+        lowered = tag.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        deduped.append(tag)
+
+    if len(deduped) < MIN_HASHTAGS:
+        deduped = generate_fallback_hashtags(body_text, deduped, MIN_HASHTAGS)
+
+    return deduped[:MAX_HASHTAGS]
+
+
 def strip_hashtags_from_text(text: str) -> str:
     """Remove hashtags from body text and normalize paragraph spacing."""
     stripped = HASHTAG_RE.sub("", text or "")
@@ -122,7 +185,7 @@ def normalize_posts(posts: Dict[str, Any]) -> Dict[str, Any]:
 
         cleaned_text = clean_post_text(strip_hashtags_from_text(raw_text))
         posts[platform] = cleaned_text
-        hashtag_map[platform] = merged_tags
+        hashtag_map[platform] = normalize_hashtag_list(cleaned_text, merged_tags)
 
     posts["hashtags"] = hashtag_map
     return posts
@@ -178,7 +241,7 @@ Platform guidelines:
 
 Requirements:
 - Each post must be ≤1900 characters
-- Include 3-5 relevant hashtags per platform that match the topic's domain
+- Include 5-15 relevant hashtags per platform that match the topic's domain
 - Use platform-appropriate language and style
 - Ensure posts are engaging and feel authentic to the topic
 - Write in clean plain-text paragraphs only

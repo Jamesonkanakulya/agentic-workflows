@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.generate_content import clean_post_text, normalize_posts
+from tools.generate_content import MAX_HASHTAGS, MIN_HASHTAGS, clean_post_text, normalize_posts
 
 
 def load_app_module(tmp_path, monkeypatch):
@@ -134,9 +134,12 @@ def test_normalize_posts_moves_hashtags_out_of_body_text():
     assert normalized["linkedin"] == "Bold intro\n\nA clean paragraph about hiring trends."
     assert normalized["facebook"] == "Plain body copy"
     assert normalized["instagram"] == "Visual hook with"
-    assert normalized["hashtags"]["linkedin"] == ["#Leadership", "#Hiring", "#Careers"]
-    assert normalized["hashtags"]["facebook"] == ["#Community", "#Careers"]
-    assert normalized["hashtags"]["instagram"] == ["#Growth", "#Brand"]
+    assert normalized["hashtags"]["linkedin"][:3] == ["#Leadership", "#Hiring", "#Careers"]
+    assert len(normalized["hashtags"]["linkedin"]) >= MIN_HASHTAGS
+    assert normalized["hashtags"]["facebook"][:2] == ["#Community", "#Careers"]
+    assert len(normalized["hashtags"]["facebook"]) >= MIN_HASHTAGS
+    assert normalized["hashtags"]["instagram"][:2] == ["#Growth", "#Brand"]
+    assert len(normalized["hashtags"]["instagram"]) >= MIN_HASHTAGS
 
 
 def test_normalize_posts_keeps_body_plain_text_without_hash_symbols():
@@ -155,4 +158,22 @@ def test_normalize_posts_keeps_body_plain_text_without_hash_symbols():
 
     assert "#" not in normalized["linkedin"]
     assert "**" not in normalized["linkedin"]
-    assert normalized["hashtags"]["linkedin"] == ["#Topic"]
+    assert normalized["hashtags"]["linkedin"][0] == "#Topic"
+    assert len(normalized["hashtags"]["linkedin"]) >= MIN_HASHTAGS
+
+
+def test_normalize_posts_caps_hashtags_at_maximum():
+    raw_posts = {
+        "linkedin": "A strong paragraph about hiring, culture, leadership, recruiting, sourcing, interviews, growth, retention, branding, teams, performance, networking, onboarding, strategy, talent, metrics.",
+        "facebook": "",
+        "instagram": "",
+        "hashtags": {
+            "linkedin": [f"#Tag{i}" for i in range(1, 20)],
+            "facebook": [],
+            "instagram": []
+        }
+    }
+
+    normalized = normalize_posts(raw_posts)
+
+    assert len(normalized["hashtags"]["linkedin"]) == MAX_HASHTAGS
