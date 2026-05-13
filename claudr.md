@@ -268,6 +268,18 @@ token.json         # Google OAuth tokens (gitignored)
 
 ---
 
+## Project-Specific Notes
+
+### LinkedIn Posting
+- The LinkedIn publisher lives in `tools/post_to_platforms.py` and is covered by `tools/tests/test_post_to_platforms.py`.
+- `.env` may contain both `LINKEDIN_PERSON_URN=urn:li:person:<id>` and `LINKEDIN_MEMBER_URN=urn:li:member:<id>`. These are not interchangeable.
+- REST Posts uses the authenticated person URN as `author`. If a configured person URN returns 403, the tool queries `/v2/userinfo` and retries with `urn:li:person:{sub}` from the access token.
+- The Shares API fallback uses `LINKEDIN_MEMBER_URN` as `owner`; using `urn:li:person:*` there causes `Owner entity type person is not supported`.
+- Never print `LINKEDIN_ACCESS_TOKEN` while debugging. If it appears in logs or chat, rotate it and update `.env`.
+- Real LinkedIn post tests create public posts. Only run them when the user explicitly approves and expects to delete the test post.
+
+---
+
 ## Quality Standards
 
 ### For Every Tool You Create:

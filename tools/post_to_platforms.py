@@ -44,6 +44,8 @@ def load_environment():
             'access_token': os.getenv('LINKEDIN_ACCESS_TOKEN'),
             'author_urn': os.getenv('LINKEDIN_AUTHOR_URN') or os.getenv('LINKEDIN_PERSON_URN'),
             'person_urn': os.getenv('LINKEDIN_PERSON_URN'),
+            'member_urn': os.getenv('LINKEDIN_MEMBER_URN'),
+            'share_owner_urn': os.getenv('LINKEDIN_SHARE_OWNER_URN') or os.getenv('LINKEDIN_MEMBER_URN'),
             'linkedin_version': os.getenv('LINKEDIN_VERSION', '202601')
         },
         'facebook': {
@@ -85,6 +87,7 @@ def load_image_url(image_url_file: Optional[str], image_url: Optional[str]) -> O
 
 
 LINKEDIN_AUTHOR_URN_RE = re.compile(r'^urn:li:(person:[A-Za-z0-9_-]+|organization:\d+)$')
+LINKEDIN_SHARE_OWNER_URN_RE = re.compile(r'^urn:li:(member:[A-Za-z0-9_-]+|organization:\d+)$')
 
 
 def _resolve_linkedin_author_urn(credentials: Dict) -> str:
@@ -109,6 +112,33 @@ def _resolve_linkedin_author_urn(credentials: Dict) -> str:
     return author_urn
 
 
+def _resolve_linkedin_share_owner_urn(credentials: Dict) -> str:
+    """Return an owner URN accepted by the legacy Shares API fallback."""
+    owner_urn = (
+        credentials.get('share_owner_urn')
+        or credentials.get('member_urn')
+        or credentials.get('author_urn')
+        or credentials.get('person_urn')
+    )
+
+    if not owner_urn:
+        raise ValueError("LinkedIn share owner URN not configured")
+
+    if owner_urn.startswith('urn:li:person:'):
+        raise ValueError(
+            "LinkedIn Shares API does not accept urn:li:person:* owners. "
+            "Set LINKEDIN_MEMBER_URN=urn:li:member:<id> for the fallback path."
+        )
+
+    if not LINKEDIN_SHARE_OWNER_URN_RE.match(owner_urn):
+        raise ValueError(
+            "LinkedIn share owner URN must match urn:li:member:<id> "
+            "or urn:li:organization:<digits>"
+        )
+
+    return owner_urn
+
+
 def _linkedin_headers(access_token: str, linkedin_version: str) -> Dict[str, str]:
     """Build headers required by LinkedIn REST APIs."""
     return {
@@ -117,6 +147,27 @@ def _linkedin_headers(access_token: str, linkedin_version: str) -> Dict[str, str
         'Linkedin-Version': linkedin_version,
         'X-Restli-Protocol-Version': '2.0.0'
     }
+
+
+def _linkedin_userinfo_author_urn(access_token: str) -> Optional[str]:
+    """Return the authenticated user's person URN from LinkedIn OIDC userinfo."""
+    try:
+        response = requests.get(
+            'https://api.linkedin.com/v2/userinfo',
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=30
+        )
+        if response.status_code != 200:
+            logger.warning(f"LinkedIn userinfo lookup failed: {response.status_code} {response.text}")
+            return None
+        subject = response.json().get('sub')
+        if not subject:
+            logger.warning("LinkedIn userinfo response did not include sub")
+            return None
+        return f'urn:li:person:{subject}'
+    except Exception as e:
+        logger.warning(f"LinkedIn userinfo lookup failed: {e}")
+        return None
 
 
 def _linkedin_upload_image(
@@ -178,6 +229,35 @@ def _linkedin_upload_image(
 
     logger.info(f"LinkedIn image uploaded: {image_urn}")
     return image_urn
+
+
+def _linkedin_post_content(
+    post_text: str,
+    author_urn: str,
+    image_urn: Optional[str]
+) -> Dict[str, Any]:
+    """Build a REST Posts API payload."""
+    post_content = {
+        'author': author_urn,
+        'commentary': post_text,
+        'visibility': 'PUBLIC',
+        'distribution': {
+            'feedDistribution': 'MAIN_FEED',
+            'targetEntities': [],
+            'thirdPartyDistributionChannels': []
+        },
+        'lifecycleState': 'PUBLISHED',
+        'isReshareDisabledByAuthor': False
+    }
+
+    if image_urn:
+        post_content['content'] = {
+            'media': {
+                'id': image_urn
+            }
+        }
+
+    return post_content
 
 
 def _linkedin_share_payload(post_text: str, author_urn: str, image_url: Optional[str]) -> Dict[str, Any]:
@@ -258,6 +338,24 @@ def _post_to_linkedin_shares(
     }
 
 
+def _linkedin_success_result(response: requests.Response) -> Dict[str, Any]:
+    """Build the common success result for a LinkedIn post response."""
+    post_id = response.headers.get('x-restli-id', '')
+    if not post_id:
+        try:
+            post_id = response.json().get('id', '')
+        except ValueError:
+            post_id = ''
+    logger.info(f"LinkedIn post created: {post_id}")
+    return {
+        'success': True,
+        'platform': 'linkedin',
+        'post_id': post_id,
+        'url': f'https://www.linkedin.com/feed/update/{post_id}',
+        'timestamp': datetime.now().isoformat()
+    }
+
+
 def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict) -> Dict[str, Any]:
     """
     Post to LinkedIn.
@@ -283,34 +381,13 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
     headers = _linkedin_headers(access_token, linkedin_version)
 
     # Upload image to LinkedIn if provided
-    content = {}
+    image_urn = None
     if image_url:
         image_urn = _linkedin_upload_image(access_token, author_urn, image_url, linkedin_version)
-        if image_urn:
-            content = {
-                'media': {
-                    'id': image_urn
-                }
-            }
-        else:
+        if not image_urn:
             logger.warning("Image upload failed, posting without image")
 
-    # Build REST Posts API content
-    post_content = {
-        'author': author_urn,
-        'commentary': post_text,
-        'visibility': 'PUBLIC',
-        'distribution': {
-            'feedDistribution': 'MAIN_FEED',
-            'targetEntities': [],
-            'thirdPartyDistributionChannels': []
-        },
-        'lifecycleState': 'PUBLISHED',
-        'isReshareDisabledByAuthor': False
-    }
-
-    if content:
-        post_content['content'] = content
+    post_content = _linkedin_post_content(post_text, author_urn, image_urn)
 
     try:
         response = requests.post(
@@ -321,25 +398,35 @@ def post_to_linkedin(post_text: str, image_url: Optional[str], credentials: Dict
         )
 
         if response.status_code in [200, 201]:
-            post_id = response.headers.get('x-restli-id', '')
-            if not post_id:
-                try:
-                    post_id = response.json().get('id', '')
-                except ValueError:
-                    post_id = ''
-            logger.info(f"LinkedIn post created: {post_id}")
-            return {
-                'success': True,
-                'platform': 'linkedin',
-                'post_id': post_id,
-                'url': f'https://www.linkedin.com/feed/update/{post_id}',
-                'timestamp': datetime.now().isoformat()
-            }
+            return _linkedin_success_result(response)
         else:
             logger.error(f"LinkedIn API error: {response.status_code}")
             logger.error(f"Response: {response.text}")
             if response.status_code == 403:
-                return _post_to_linkedin_shares(post_text, image_url, access_token, author_urn)
+                userinfo_author_urn = _linkedin_userinfo_author_urn(access_token)
+                if userinfo_author_urn and userinfo_author_urn != author_urn:
+                    logger.info("Retrying LinkedIn REST post with authenticated userinfo author URN...")
+                    retry_image_urn = image_urn
+                    if image_url and not retry_image_urn:
+                        retry_image_urn = _linkedin_upload_image(
+                            access_token,
+                            userinfo_author_urn,
+                            image_url,
+                            linkedin_version
+                        )
+                    retry_response = requests.post(
+                        'https://api.linkedin.com/rest/posts',
+                        headers=headers,
+                        json=_linkedin_post_content(post_text, userinfo_author_urn, retry_image_urn),
+                        timeout=30
+                    )
+                    if retry_response.status_code in [200, 201]:
+                        return _linkedin_success_result(retry_response)
+                    logger.error(f"LinkedIn userinfo-author retry failed: {retry_response.status_code}")
+                    logger.error(f"Response: {retry_response.text}")
+
+                share_owner_urn = _resolve_linkedin_share_owner_urn(credentials)
+                return _post_to_linkedin_shares(post_text, image_url, access_token, share_owner_urn)
             return {
                 'success': False,
                 'platform': 'linkedin',

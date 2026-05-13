@@ -64,7 +64,7 @@ Required API keys:
 - **HUGGINGFACE_API_TOKEN**: Get from [Hugging Face](https://huggingface.co/settings/tokens)
 - **Cloudflare R2 Credentials**: For image storage (R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID)
 - **Social Media Tokens**: LinkedIn, Facebook, and Instagram API access
-  - LinkedIn uses the REST Posts API and requires `LINKEDIN_ACCESS_TOKEN` plus `LINKEDIN_AUTHOR_URN=urn:li:person:<id>` for personal-profile posting. `LINKEDIN_PERSON_URN` is still accepted as a legacy fallback.
+  - LinkedIn uses the REST Posts API with `LINKEDIN_ACCESS_TOKEN` plus `LINKEDIN_AUTHOR_URN=urn:li:person:<id>` for personal-profile posting. `LINKEDIN_PERSON_URN` is still accepted as a legacy fallback. If REST Posts returns 403, the app falls back to Shares API using `LINKEDIN_MEMBER_URN=urn:li:member:<id>`.
 - **2FA persistence**: Leave `TOTP_SECRET` empty for first-time setup. The app saves verified 2FA state in `AUTH_DB_PATH` (`./data/auth.db` by default). Mount the `data/` directory as persistent storage when recreating Docker containers.
 
 ### 3. Run Tests

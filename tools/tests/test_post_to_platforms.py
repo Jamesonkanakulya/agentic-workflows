@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import post_to_platforms
 from post_to_platforms import (
     _resolve_linkedin_author_urn,
+    _resolve_linkedin_share_owner_urn,
     _linkedin_share_payload,
     load_environment,
     post_to_linkedin,
@@ -51,6 +52,17 @@ class TestLinkedInEnvironment:
         assert credentials['linkedin']['author_urn'] == 'urn:li:person:new_id'
         assert credentials['linkedin']['person_urn'] == 'urn:li:person:old_id'
         assert credentials['linkedin']['linkedin_version'] == '202601'
+
+    def test_loads_member_urn_for_shares_fallback(self, monkeypatch):
+        monkeypatch.setattr(post_to_platforms, 'load_dotenv', lambda override=True: None)
+        monkeypatch.setenv('LINKEDIN_PERSON_URN', 'urn:li:person:mb5LMCFt_K')
+        monkeypatch.setenv('LINKEDIN_MEMBER_URN', 'urn:li:member:bT9xZS2UIO')
+
+        credentials = load_environment()
+
+        assert credentials['linkedin']['author_urn'] == 'urn:li:person:mb5LMCFt_K'
+        assert credentials['linkedin']['member_urn'] == 'urn:li:member:bT9xZS2UIO'
+        assert credentials['linkedin']['share_owner_urn'] == 'urn:li:member:bT9xZS2UIO'
 
     def test_falls_back_to_legacy_person_urn(self, monkeypatch):
         monkeypatch.setattr(post_to_platforms, 'load_dotenv', lambda override=True: None)
@@ -96,6 +108,26 @@ class TestLinkedInAuthorUrnValidation:
         )
 
 
+class TestLinkedInShareOwnerUrnValidation:
+    """Test LinkedIn Shares API fallback owner URN validation."""
+
+    def test_accepts_member_urn(self):
+        assert (
+            _resolve_linkedin_share_owner_urn({'member_urn': 'urn:li:member:bT9xZS2UIO'})
+            == 'urn:li:member:bT9xZS2UIO'
+        )
+
+    def test_accepts_organization_urn(self):
+        assert (
+            _resolve_linkedin_share_owner_urn({'share_owner_urn': 'urn:li:organization:123456'})
+            == 'urn:li:organization:123456'
+        )
+
+    def test_rejects_person_urn(self):
+        with pytest.raises(ValueError, match="does not accept urn:li:person"):
+            _resolve_linkedin_share_owner_urn({'person_urn': 'urn:li:person:mb5LMCFt_K'})
+
+
 class TestLinkedInPosting:
     """Test LinkedIn REST Posts API payloads."""
 
@@ -116,6 +148,7 @@ class TestLinkedInPosting:
             {
                 'access_token': 'test-token',
                 'author_urn': 'urn:li:person:mb5LMCFt_K',
+                'member_urn': 'urn:li:member:bT9xZS2UIO',
                 'linkedin_version': '202601',
             },
         )
@@ -172,6 +205,7 @@ class TestLinkedInPosting:
             {
                 'access_token': 'test-token',
                 'author_urn': 'urn:li:person:mb5LMCFt_K',
+                'member_urn': 'urn:li:member:bT9xZS2UIO',
                 'linkedin_version': '202601',
             },
         )
@@ -201,7 +235,11 @@ class TestLinkedInPosting:
                 return FakeResponse(403, text='{"message":"","status":403}')
             return FakeResponse(201, {'activity': 'urn:li:activity:333'})
 
+        def fake_get(url, headers=None, timeout=30):
+            return FakeResponse(403, text='{"message":"","status":403}')
+
         monkeypatch.setattr(post_to_platforms.requests, 'post', fake_post)
+        monkeypatch.setattr(post_to_platforms.requests, 'get', fake_get)
 
         result = post_to_linkedin(
             'Fallback post',
@@ -209,6 +247,7 @@ class TestLinkedInPosting:
             {
                 'access_token': 'test-token',
                 'author_urn': 'urn:li:person:mb5LMCFt_K',
+                'member_urn': 'urn:li:member:bT9xZS2UIO',
                 'linkedin_version': '202601',
             },
         )
@@ -219,7 +258,7 @@ class TestLinkedInPosting:
         assert calls[1] == (
             'https://api.linkedin.com/v2/shares',
             {
-                'owner': 'urn:li:person:mb5LMCFt_K',
+                'owner': 'urn:li:member:bT9xZS2UIO',
                 'text': {
                     'text': 'Fallback post'
                 },
@@ -230,14 +269,46 @@ class TestLinkedInPosting:
             }
         )
 
+    def test_rest_posts_403_retries_with_userinfo_author(self, monkeypatch):
+        calls = []
+
+        def fake_post(url, headers, json, timeout):
+            calls.append((url, json))
+            if len(calls) == 1:
+                return FakeResponse(403, text='{"message":"","status":403}')
+            return FakeResponse(201, headers={'x-restli-id': 'urn:li:share:444'})
+
+        def fake_get(url, headers=None, timeout=30):
+            assert url == 'https://api.linkedin.com/v2/userinfo'
+            return FakeResponse(200, {'sub': 'bT9xZS2UIO'})
+
+        monkeypatch.setattr(post_to_platforms.requests, 'post', fake_post)
+        monkeypatch.setattr(post_to_platforms.requests, 'get', fake_get)
+
+        result = post_to_linkedin(
+            'Retry post',
+            None,
+            {
+                'access_token': 'test-token',
+                'author_urn': 'urn:li:person:mb5LMCFt_K',
+                'member_urn': 'urn:li:member:bT9xZS2UIO',
+                'linkedin_version': '202601',
+            },
+        )
+
+        assert result['success'] is True
+        assert result['post_id'] == 'urn:li:share:444'
+        assert calls[0][1]['author'] == 'urn:li:person:mb5LMCFt_K'
+        assert calls[1][1]['author'] == 'urn:li:person:bT9xZS2UIO'
+
     def test_share_payload_includes_image_link_card(self):
         payload = _linkedin_share_payload(
             'Share with image',
-            'urn:li:person:mb5LMCFt_K',
+            'urn:li:member:bT9xZS2UIO',
             'https://cdn.example.test/post.png',
         )
 
-        assert payload['owner'] == 'urn:li:person:mb5LMCFt_K'
+        assert payload['owner'] == 'urn:li:member:bT9xZS2UIO'
         assert payload['content'] == {
             'contentEntities': [
                 {
